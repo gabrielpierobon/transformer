@@ -107,6 +107,54 @@ class CustomMSEWithUncertainty(tf.keras.losses.Loss):
         
         return tf.reduce_mean(loss)
 
+def gaussian_nll(y_true, y_pred):
+    """Gaussian Negative Log Likelihood Loss using pure TensorFlow operations"""
+    mu, log_sigma = tf.split(y_pred, 2, axis=-1)
+    sigma = tf.math.exp(0.5 * log_sigma)
+    
+    # Calculate negative log likelihood
+    log_2pi = tf.math.log(2.0 * np.pi)
+    log_likelihood = -0.5 * (
+        log_2pi + 
+        2.0 * log_sigma + 
+        tf.square(y_true - mu) / tf.square(sigma)
+    )
+    return -tf.reduce_mean(log_likelihood)
+
+def smape_loss(y_true, y_pred):
+    """Symmetric Mean Absolute Percentage Error (sMAPE) loss"""
+    epsilon = 0.1  # small constant to avoid division by zero
+    true_o = tf.cast(y_true, tf.float32)
+    pred_o = tf.cast(y_pred, tf.float32)
+    numerator = tf.abs(pred_o - true_o)
+    denominator = tf.abs(true_o) + tf.abs(pred_o) + epsilon
+    return 2 * tf.reduce_mean(numerator / denominator)
+
+def hybrid_loss(alpha=0.9):
+    """
+    Create a hybrid loss function combining sMAPE and Gaussian NLL.
+    
+    Args:
+        alpha (float): Weight for sMAPE loss. (1-alpha) will be used for Gaussian NLL.
+        
+    Returns:
+        function: Hybrid loss function
+    """
+    def loss_fn(y_true, y_pred):
+        # Split predictions into mu and sigma
+        mu, log_sigma = tf.split(y_pred, 2, axis=-1)
+        
+        # Compute sMAPE Loss using mu as the point forecast
+        smape_value = smape_loss(y_true, mu)
+        
+        # Compute Gaussian NLL
+        nll_value = gaussian_nll(y_true, y_pred)
+        
+        # Combined weighted loss
+        return alpha * smape_value + (1.0 - alpha) * nll_value
+    
+    return loss_fn
+
 def build_transformer_model(sequence_length=60, num_heads=4, d_model=512, dff=512, rate=0.05, probabilistic=True):
     """
     Build a transformer model for time series forecasting with masking and optional uncertainty estimation.
@@ -150,9 +198,15 @@ def build_transformer_model(sequence_length=60, num_heads=4, d_model=512, dff=51
 
     return tf.keras.Model(inputs=inputs, outputs=outputs)
 
-def get_model(sequence_length=60, probabilistic=True):
+def get_model(sequence_length=60, probabilistic=True, loss_type='gaussian_nll', loss_alpha=0.9):
     """
     Get the compiled transformer model.
+    
+    Args:
+        sequence_length (int): Length of input sequences
+        probabilistic (bool): Whether to use probabilistic predictions
+        loss_type (str): Type of loss function ('gaussian_nll', 'smape', or 'hybrid')
+        loss_alpha (float): Weight for sMAPE in hybrid loss (1-alpha for Gaussian NLL)
     """
     model = build_transformer_model(
         sequence_length=sequence_length,
@@ -164,14 +218,34 @@ def get_model(sequence_length=60, probabilistic=True):
     )
     
     if probabilistic:
-        loss = CustomMSEWithUncertainty()
+        if loss_type == 'gaussian_nll':
+            loss = gaussian_nll
+        elif loss_type == 'smape':
+            # For SMAPE with probabilistic model, we'll only use the mean prediction
+            def smape_prob(y_true, y_pred):
+                mu, _ = tf.split(y_pred, 2, axis=-1)
+                return smape_loss(y_true, mu)
+            loss = smape_prob
+        elif loss_type == 'hybrid':
+            loss = hybrid_loss(alpha=loss_alpha)
+        else:
+            raise ValueError(f"Unknown loss type: {loss_type}")
     else:
         loss = 'mse'
+    
+    # Custom MAE metric for probabilistic model that only uses mean prediction
+    if probabilistic:
+        def mae_prob(y_true, y_pred):
+            mu, _ = tf.split(y_pred, 2, axis=-1)
+            return tf.keras.metrics.mean_absolute_error(y_true, mu)
+        metrics = [mae_prob]
+    else:
+        metrics = ['mae']
     
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
         loss=loss,
-        metrics=['mae']
+        metrics=metrics
     )
     
     return model 

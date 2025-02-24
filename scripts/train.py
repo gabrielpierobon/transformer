@@ -63,6 +63,21 @@ def parse_args():
         help='Model version identifier'
     )
     
+    # Loss function parameters
+    parser.add_argument(
+        '--loss-type',
+        type=str,
+        choices=['gaussian_nll', 'smape', 'hybrid'],
+        default='gaussian_nll',
+        help='Type of loss function to use'
+    )
+    parser.add_argument(
+        '--loss-alpha',
+        type=float,
+        default=0.9,
+        help='Weight for sMAPE in hybrid loss (1-alpha for Gaussian NLL)'
+    )
+    
     return parser.parse_args()
 
 def diagnose_gpu():
@@ -144,6 +159,14 @@ def main():
     # Create series range string
     series_range = f'M{args.start_series}_M{args.end_series}'
     
+    # Add model type and loss type to version
+    model_type = 'proba' if args.probabilistic else 'point'
+    if args.probabilistic and args.loss_type == 'hybrid':
+        model_type += f'_hybrid_{args.loss_alpha}'
+    elif args.probabilistic:
+        model_type += f'_{args.loss_type}'
+    model_version = f'{args.version}_{model_type}_{series_range}'
+    
     # Define data paths
     base_directory = Path('data/processed/')
     x_train_path = base_directory / f'X_train_{series_range}.npy'
@@ -186,7 +209,9 @@ def main():
     print("Building model...")
     model = get_model(
         sequence_length=args.sequence_length,
-        probabilistic=args.probabilistic
+        probabilistic=args.probabilistic,
+        loss_type=args.loss_type,
+        loss_alpha=args.loss_alpha
     )
     model.summary()
     
@@ -205,7 +230,7 @@ def main():
             verbose=1
         ),
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=str(checkpoint_dir / f'model_{args.version}_{series_range}_{{epoch:02d}}.h5'),
+            filepath=str(checkpoint_dir / f'model_{model_version}_{{epoch:02d}}.h5'),
             save_best_only=True,
             save_weights_only=True,
             monitor='val_loss',
@@ -219,7 +244,7 @@ def main():
             verbose=1
         ),
         tf.keras.callbacks.TensorBoard(
-            log_dir=str(log_dir / f'transformer_{args.version}_{series_range}'),
+            log_dir=str(log_dir / f'transformer_{model_version}'),
             histogram_freq=1,
             update_freq='epoch'
         )
@@ -228,11 +253,14 @@ def main():
     # Print training configuration
     print("\nTraining Configuration:")
     print(f"Series Range: {series_range}")
+    print(f"Model Type: {model_type}")
+    print(f"Loss Type: {args.loss_type}")
+    if args.loss_type == 'hybrid':
+        print(f"Loss Alpha: {args.loss_alpha}")
     print(f"Batch Size: {args.batch_size}")
     print(f"Epochs: {args.epochs}")
     print(f"Sequence Length: {args.sequence_length}")
-    print(f"Probabilistic: {args.probabilistic}")
-    print(f"Model Version: {args.version}")
+    print(f"Model Version: {model_version}")
     
     # Train model with adjusted parameters
     print("\nStarting training...")
@@ -256,11 +284,12 @@ def main():
         plt.legend()
         
         plt.subplot(1, 2, 2)
-        plt.plot(history.history['mae'], label='Training MAE')
-        plt.plot(history.history['val_mae'], label='Validation MAE')
-        plt.title('Model MAE')
+        metric_name = 'mae_prob' if args.probabilistic else 'mae'
+        plt.plot(history.history[metric_name], label=f'Training {metric_name.upper()}')
+        plt.plot(history.history[f'val_{metric_name}'], label=f'Validation {metric_name.upper()}')
+        plt.title(f'Model {metric_name.upper()}')
         plt.xlabel('Epoch')
-        plt.ylabel('MAE')
+        plt.ylabel(metric_name.upper())
         plt.legend()
         
         # Create figures directory if it doesn't exist
@@ -268,7 +297,7 @@ def main():
         figures_dir.mkdir(parents=True, exist_ok=True)
         
         plt.tight_layout()
-        plt.savefig(figures_dir / f'training_history_{args.version}_{series_range}.png')
+        plt.savefig(figures_dir / f'training_history_{model_version}.png')
         plt.close()
         
         # Final evaluation
@@ -277,11 +306,11 @@ def main():
         print(f"Final Validation Loss: {val_loss:.6f}")
         print(f"Final Validation MAE: {val_mae:.6f}")
         
-        # Save final model
+        # Save final model with model type in name
         final_model_dir = Path('models/final')
         final_model_dir.mkdir(parents=True, exist_ok=True)
-        model.save(final_model_dir / f'transformer_{args.version}_{series_range}')
-        print(f"\nModel saved to {final_model_dir}/transformer_{args.version}_{series_range}")
+        model.save(final_model_dir / f'transformer_{model_version}')
+        print(f"\nModel saved to {final_model_dir}/transformer_{model_version}")
         
     except Exception as e:
         print(f"\nTraining failed with error: {str(e)}")
