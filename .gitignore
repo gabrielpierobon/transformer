@@ -45,3 +45,5 @@ Thumbs.db
 
 data/*
 models/*
+reports/*
+logs/*
