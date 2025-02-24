@@ -109,8 +109,34 @@ Parameters:
 - `--end-series`: Last series to include (e.g., 50 for M50)
 - `--batch-size`: Batch size for training (default: 32)
 - `--epochs`: Number of training epochs (default: 50)
-- `--probabilistic`: Add this flag for probabilistic predictions
 - `--sequence-length`: Length of input sequences (default: 60)
+
+#### Training Probabilistic Models
+
+For probabilistic predictions (mean and variance), add the `--probabilistic` flag and choose a loss function:
+
+1. Gaussian Negative Log Likelihood (default):
+```bash
+python scripts/train.py --start-series 1 --end-series 50 --probabilistic --loss-type gaussian_nll
+```
+
+2. Symmetric Mean Absolute Percentage Error (sMAPE):
+```bash
+python scripts/train.py --start-series 1 --end-series 50 --probabilistic --loss-type smape
+```
+
+3. Hybrid Loss (combining sMAPE and Gaussian NLL):
+```bash
+python scripts/train.py --start-series 1 --end-series 50 --probabilistic --loss-type hybrid --loss-alpha 0.8
+```
+
+The `loss-alpha` parameter controls the weight between sMAPE (alpha) and Gaussian NLL (1-alpha). Higher alpha values give more weight to sMAPE.
+
+Model files will be saved with descriptive names indicating the type:
+- Point predictions: `transformer_1.0_directml_point_M1_M50/`
+- Probabilistic with Gaussian NLL: `transformer_1.0_directml_proba_gaussian_nll_M1_M50/`
+- Probabilistic with sMAPE: `transformer_1.0_directml_proba_smape_M1_M50/`
+- Probabilistic with Hybrid loss: `transformer_1.0_directml_proba_hybrid_0.8_M1_M50/`
 
 The training script will:
 - Create a transformer model
