@@ -1,0 +1,12 @@
+# Data paths
+train_data_path: "data/raw/Monthly-train.csv"
+test_data_path: "data/raw/Monthly-test.csv"
+processed_data_path: "data/processed"
+
+# Sequence parameters
+extension: 61  # Sequence length
+batch_size: 32
+random_seed: 42
+
+# Data split ratios (only applied to training data)
+validation_split: 0.2  # Percentage of training data to use for validation 

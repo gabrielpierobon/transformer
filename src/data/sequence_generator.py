@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Tuple, List
+from .config import DataConfig
 
 class SequenceGenerator:
     """Generates sequences for model training."""

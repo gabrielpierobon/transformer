@@ -6,6 +6,7 @@ from pathlib import Path
 import logging
 import argparse
 import yaml
+import numpy as np
 from typing import Dict, Any
 
 # Add the project root directory to the Python path
@@ -14,8 +15,6 @@ sys.path.append(str(ROOT_DIR))
 
 from src.data.config import DataConfig
 from src.data.dataset_loader import DatasetLoader
-from src.data.preprocessing import TimeSeriesPreprocessor
-from src.data.sequence_generator import SequenceGenerator
 
 # Configure logging
 logging.basicConfig(
@@ -41,69 +40,39 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         logger.error(f"Error loading config: {str(e)}")
         raise
 
-def create_dataset(config: DataConfig) -> None:
+def create_dataset(config: DataConfig, start_series: int = None, end_series: int = None) -> None:
     """
     Create processed dataset from raw data.
     
     Args:
         config: Data processing configuration
+        start_series: Optional starting index for series (e.g., 1 for M1)
+        end_series: Optional ending index for series (e.g., 50 for M50)
     """
     try:
         logger.info("Initializing data pipeline components...")
         loader = DatasetLoader(config)
-        preprocessor = TimeSeriesPreprocessor(config)
-        sequence_gen = SequenceGenerator(config)
 
-        # Load raw data
-        logger.info(f"Loading raw data from {config.raw_data_path}")
-        raw_data = loader.load_raw_data()
-        logger.info(f"Loaded data shape: {raw_data.shape}")
-
-        # Split data
-        logger.info("Splitting data into train/validation/test sets...")
-        train_data, val_data, test_data = loader.split_data(raw_data)
-        logger.info(f"Train shape: {train_data.shape}")
-        logger.info(f"Validation shape: {val_data.shape}")
-        logger.info(f"Test shape: {test_data.shape}")
-
-        # Process each set
-        logger.info("Processing training data...")
-        processed_train = preprocessor.process_batch(train_data)
-        logger.info("Processing validation data...")
-        processed_val = preprocessor.process_batch(val_data)
-        logger.info("Processing test data...")
-        processed_test = preprocessor.process_batch(test_data)
-
-        # Generate sequences
-        logger.info("Generating sequences for training...")
-        X_train, y_train = sequence_gen.create_sequences(
-            processed_train.values,
-            sequence_length=config.extension - 1
-        )
-        
-        logger.info("Generating sequences for validation...")
-        X_val, y_val = sequence_gen.create_sequences(
-            processed_val.values,
-            sequence_length=config.extension - 1
-        )
-        
-        logger.info("Generating sequences for testing...")
-        X_test, y_test = sequence_gen.create_sequences(
-            processed_test.values,
-            sequence_length=config.extension - 1
+        # Load and process data
+        logger.info("Loading and processing data...")
+        X_train, y_train, X_val, y_val = loader.load_data(
+            start_series=start_series,
+            end_series=end_series
         )
 
         # Create output directory if it doesn't exist
-        os.makedirs(os.path.dirname(config.processed_data_path), exist_ok=True)
+        output_dir = Path(config.processed_data_path)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Define output paths with series range in filename if specified
+        series_suffix = f"_M{start_series}_M{end_series}" if start_series and end_series else ""
+        
         # Save processed data
-        logger.info(f"Saving processed data to {config.processed_data_path}")
-        np.save(f"{config.processed_data_path}/X_train.npy", X_train)
-        np.save(f"{config.processed_data_path}/y_train.npy", y_train)
-        np.save(f"{config.processed_data_path}/X_val.npy", X_val)
-        np.save(f"{config.processed_data_path}/y_val.npy", y_val)
-        np.save(f"{config.processed_data_path}/X_test.npy", X_test)
-        np.save(f"{config.processed_data_path}/y_test.npy", y_test)
+        logger.info(f"Saving processed data to {output_dir}")
+        np.save(output_dir / f"X_train{series_suffix}.npy", X_train)
+        np.save(output_dir / f"y_train{series_suffix}.npy", y_train)
+        np.save(output_dir / f"X_val{series_suffix}.npy", X_val)
+        np.save(output_dir / f"y_val{series_suffix}.npy", y_val)
 
         logger.info("Dataset creation completed successfully!")
 
@@ -120,6 +89,16 @@ def parse_args() -> argparse.Namespace:
         default=str(ROOT_DIR / 'config' / 'data_config.yaml'),
         help='Path to configuration file'
     )
+    parser.add_argument(
+        '--start-series',
+        type=int,
+        help='Starting series index (e.g., 1 for M1)'
+    )
+    parser.add_argument(
+        '--end-series',
+        type=int,
+        help='Ending series index (e.g., 50 for M50)'
+    )
     return parser.parse_args()
 
 def main():
@@ -134,17 +113,25 @@ def main():
         
         # Create DataConfig object
         config = DataConfig(
-            raw_data_path=Path(config_dict['raw_data_path']),
+            train_data_path=Path(config_dict['train_data_path']),
+            test_data_path=Path(config_dict['test_data_path']),
             processed_data_path=Path(config_dict['processed_data_path']),
             extension=config_dict.get('extension', 61),
             batch_size=config_dict.get('batch_size', 32),
             random_seed=config_dict.get('random_seed', 42),
             validation_split=config_dict.get('validation_split', 0.2),
-            test_split=config_dict.get('test_split', 0.1)
+            feature_columns=config_dict.get('feature_columns', None),
+            target_column=config_dict.get('target_column', 'V1'),
+            normalize_data=config_dict.get('normalize_data', True),
+            max_sequence_length=config_dict.get('max_sequence_length', None)
         )
         
         # Create dataset
-        create_dataset(config)
+        create_dataset(
+            config,
+            start_series=args.start_series,
+            end_series=args.end_series
+        )
         
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")

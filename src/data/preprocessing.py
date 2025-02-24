@@ -1,6 +1,8 @@
 from sklearn.preprocessing import MinMaxScaler
 import numpy as np
+import pandas as pd
 from typing import List, Dict, Tuple
+from .config import DataConfig
 
 class TimeSeriesPreprocessor:
     """Handles time series preprocessing and feature engineering."""
@@ -19,13 +21,22 @@ class TimeSeriesPreprocessor:
         Returns:
             Preprocessed numpy array
         """
-        # Convert to numpy and reshape for scaling
-        values = series.values.reshape(-1, 1)
-        
-        # Scale the values
-        scaled_values = self.scaler.fit_transform(values).flatten()
-        
-        return scaled_values
+        try:
+            # Ensure numeric values
+            series = pd.to_numeric(series, errors='coerce')
+            
+            # Handle any NaN values
+            series = series.fillna(method='ffill').fillna(method='bfill')
+            
+            # Convert to numpy and reshape for scaling
+            values = series.values.reshape(-1, 1)
+            
+            # Scale the values
+            scaled_values = self.scaler.fit_transform(values).flatten()
+            
+            return scaled_values
+        except Exception as e:
+            raise Exception(f"Error preprocessing series: {str(e)}")
     
     def handle_missing_values(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -37,10 +48,17 @@ class TimeSeriesPreprocessor:
         Returns:
             DataFrame with handled missing values
         """
-        # Forward fill followed by backward fill
-        processed_data = data.ffill().bfill()
-        
-        return processed_data
+        try:
+            # Convert all columns to numeric
+            for col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors='coerce')
+            
+            # Forward fill followed by backward fill
+            processed_data = data.fillna(method='ffill').fillna(method='bfill')
+            
+            return processed_data
+        except Exception as e:
+            raise Exception(f"Error handling missing values: {str(e)}")
     
     def process_batch(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -52,13 +70,15 @@ class TimeSeriesPreprocessor:
         Returns:
             Processed DataFrame
         """
-        # Handle missing values
-        cleaned_data = self.handle_missing_values(data)
-        
-        # Process each series
-        processed_series = {}
-        for series_id in cleaned_data['V1'].unique():
-            series = cleaned_data[cleaned_data['V1'] == series_id]
-            processed_series[series_id] = self.preprocess_series(series)
+        try:
+            # Handle missing values
+            cleaned_data = self.handle_missing_values(data)
             
-        return pd.DataFrame(processed_series)
+            # Process each column
+            processed_data = pd.DataFrame()
+            for column in cleaned_data.columns:
+                processed_data[column] = self.preprocess_series(cleaned_data[column])
+                
+            return processed_data
+        except Exception as e:
+            raise Exception(f"Error processing batch: {str(e)}")

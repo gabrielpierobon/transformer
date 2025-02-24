@@ -19,13 +19,20 @@ class DataValidator:
         if data.empty:
             return False
             
-        # Check for required columns
-        required_cols = ['V1']  # Add your required columns
-        if not all(col in data.columns for col in required_cols):
+        # Check if we have any columns
+        if len(data.columns) < 2:  # Need at least V1 and one numeric column
             return False
             
-        # Check for missing values
-        if data.isnull().any().any():
+        # Check if column names follow the expected pattern
+        if not all(col.startswith('V') for col in data.columns):
+            return False
+            
+        # Check if numeric columns (all except V1) can be converted to float
+        numeric_cols = data.columns[1:]  # All columns except V1
+        try:
+            for col in numeric_cols:
+                pd.to_numeric(data[col], errors='raise')
+        except:
             return False
             
         return True
