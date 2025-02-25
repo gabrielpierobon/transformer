@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import json
 
-def send_time_series_to_api(values, model_type="probabilistic", n_steps=36):
+def send_time_series_to_api(values, model_type="point", n_steps=36):
     """
     Send a time series to the forecasting API and get results back.
     
@@ -106,7 +106,7 @@ def main():
     # Send to API and get forecast
     forecast_results = send_time_series_to_api(
         values=values,
-        model_type="probabilistic",  # Use "point" for point forecasts
+        model_type="point",  # Use "point" for point forecasts
         n_steps=36  # Forecast 36 steps ahead
     )
     

@@ -16,16 +16,31 @@ This API provides endpoints for generating time series forecasts using transform
 1. Make sure you have all the required dependencies installed:
 
 ```bash
-pip install fastapi uvicorn tensorflow pandas numpy scikit-learn matplotlib
+pip install fastapi uvicorn tensorflow pandas numpy scikit-learn matplotlib requests
 ```
 
 2. Make sure you have the trained models in the correct location:
    - Point model: `models/final/transformer_1.0_directml_point_M1_M2`
-   - Probabilistic models: `models/final/transformer_1.0_directml_proba_[loss_type]_[alpha]_M1_M2`
+   - Probabilistic model: `models/final/transformer_1.0_directml_proba_hybrid_0.8_M1_M2`
 
 ## Running the API
 
-Start the API server with:
+You can start the API server using one of the provided scripts:
+
+### On Windows:
+
+```bash
+.\api\start_api.bat
+```
+
+### On Unix/Linux/Mac:
+
+```bash
+chmod +x ./api/start_api.sh
+./api/start_api.sh
+```
+
+### Directly with Python:
 
 ```bash
 cd api
@@ -57,7 +72,7 @@ Generates a forecast for the provided time series data.
 ```json
 {
   "values": [1.0, 2.0, 3.0, ...],
-  "model_type": "probabilistic",
+  "model_type": "point",
   "n_steps": 36,
   "sequence_length": 60,
   "num_samples": 1000,
@@ -100,13 +115,40 @@ Generates a forecast for the provided time series data.
 
 ## Example Usage
 
-### Using the Client Script
+### Using the Simple Client Script
 
-A client script is provided to demonstrate how to use the API:
+A simple client script is provided to quickly test the API:
 
 ```bash
-cd api
-python client_example.py --model-type probabilistic --loss-type hybrid --loss-alpha 0.8 --n-steps 36
+python api/simple_client.py
+```
+
+This will:
+1. Generate a synthetic sine wave time series with noise
+2. Send it to the API to generate a point forecast (no confidence intervals)
+3. Print the forecast values
+4. Plot the results and save the plot to `reports/figures/simple_api_forecast.png`
+
+To use the probabilistic model instead, you can modify the script to change:
+```python
+model_type="point"
+```
+to:
+```python
+model_type="probabilistic"
+```
+
+### Using the Full Client Example
+
+A more comprehensive client script is also provided with command-line options:
+
+```bash
+python api/client_example.py --model-type probabilistic --loss-type hybrid --loss-alpha 0.8 --n-steps 36
+```
+
+For point forecasts:
+```bash
+python api/client_example.py --model-type point --n-steps 36
 ```
 
 This will:
@@ -134,11 +176,19 @@ data = np.sin(np.arange(100) * 0.1) + np.random.normal(0, 0.1, 100)
 # Prepare request payload
 payload = {
     "values": data.tolist(),
-    "model_type": "probabilistic",
-    "n_steps": 36,
-    "loss_type": "hybrid",
-    "loss_alpha": 0.8
+    "model_type": "point",  # Use "point" for point forecasts or "probabilistic" for probabilistic forecasts
+    "n_steps": 36
 }
+
+# Add probabilistic parameters if needed
+if payload["model_type"] == "probabilistic":
+    payload.update({
+        "loss_type": "hybrid",
+        "loss_alpha": 0.8,
+        "low_bound_conf": 25,
+        "high_bound_conf": 75,
+        "num_samples": 1000
+    })
 
 # Make API call
 response = requests.post("http://localhost:8000/forecast/", json=payload)
@@ -146,9 +196,12 @@ forecast_data = response.json()
 
 # Access forecast results
 forecast = forecast_data["forecast"]
-lower_bound = forecast_data["lower_bound"]
-upper_bound = forecast_data["upper_bound"]
-dates = forecast_data["dates"]
+# For probabilistic forecasts only:
+if "lower_bound" in forecast_data:
+    lower_bound = forecast_data["lower_bound"]
+    upper_bound = forecast_data["upper_bound"]
+if "dates" in forecast_data:
+    dates = forecast_data["dates"]
 ```
 
 ## API Documentation
@@ -164,10 +217,24 @@ These interfaces provide detailed information about the API endpoints, request/r
 
 The API returns appropriate HTTP status codes and error messages for different types of errors:
 
-- 400 Bad Request: Invalid request parameters
+- 400 Bad Request: Invalid request parameters (e.g., empty values list)
 - 500 Internal Server Error: Server-side errors (e.g., model loading errors)
 
 Error responses include a detail field with a description of the error.
+
+## Testing
+
+The API includes a test suite that can be run with:
+
+```bash
+python api/test_api.py
+```
+
+This will run a series of tests to verify that the API is functioning correctly, including:
+- Health check endpoint
+- Point forecasting
+- Probabilistic forecasting
+- Error handling for invalid requests
 
 ## Performance Considerations
 
