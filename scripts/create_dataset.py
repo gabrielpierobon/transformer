@@ -23,22 +23,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def load_config(config_path: Path) -> Dict[str, Any]:
-    """
-    Load configuration from YAML file.
+def load_config(config_path: str) -> DataConfig:
+    """Load configuration from YAML file."""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
     
-    Args:
-        config_path: Path to configuration file
-        
-    Returns:
-        Dictionary containing configuration
-    """
-    try:
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-    except Exception as e:
-        logger.error(f"Error loading config: {str(e)}")
-        raise
+    return DataConfig(
+        train_data_path=config['train_data_path'],
+        test_data_path=config['test_data_path'],
+        processed_data_path=config['processed_data_path'],
+        extension=config['extension'],
+        batch_size=config['batch_size'],
+        validation_split=config['validation_split'],
+        detrend_data=config.get('detrending', {}).get('enabled', False),
+        min_points_stl=config.get('detrending', {}).get('min_points_stl', 12),
+        min_points_linear=config.get('detrending', {}).get('min_points_linear', 5),
+        force_linear_detrend=config.get('detrending', {}).get('force_linear', False),
+        dtype_precision=config.get('dtype', {}).get('precision', 'float16')
+    )
 
 def create_dataset(config: DataConfig, start_series: int = None, end_series: int = None, sample_size: int = None) -> None:
     """
@@ -120,22 +122,18 @@ def main():
         
         # Load configuration
         logger.info(f"Loading configuration from {args.config}")
-        config_dict = load_config(Path(args.config))
+        config = load_config(args.config)
         
-        # Create DataConfig object
-        config = DataConfig(
-            train_data_path=Path(config_dict['train_data_path']),
-            test_data_path=Path(config_dict['test_data_path']),
-            processed_data_path=Path(config_dict['processed_data_path']),
-            extension=config_dict.get('extension', 61),
-            batch_size=config_dict.get('batch_size', 32),
-            random_seed=config_dict.get('random_seed', 42),
-            validation_split=config_dict.get('validation_split', 0.2),
-            feature_columns=config_dict.get('feature_columns', None),
-            target_column=config_dict.get('target_column', 'V1'),
-            normalize_data=config_dict.get('normalize_data', True),
-            max_sequence_length=config_dict.get('max_sequence_length', None)
-        )
+        # Log detrending configuration
+        if config.detrend_data:
+            logger.info(
+                "Detrending enabled with configuration: "
+                f"min_points_stl={config.min_points_stl}, "
+                f"min_points_linear={config.min_points_linear}, "
+                f"force_linear={config.force_linear_detrend}"
+            )
+        else:
+            logger.info("Detrending disabled - using original series")
         
         # Create dataset
         create_dataset(
