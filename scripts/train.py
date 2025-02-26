@@ -5,6 +5,7 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 import argparse
+import gc  # Add garbage collector
 
 # Add the src directory to the path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -39,8 +40,14 @@ def parse_args():
     parser.add_argument(
         '--batch-size',
         type=int,
-        default=32,
+        default=8,  # Reduced default batch size
         help='Batch size for training'
+    )
+    parser.add_argument(
+        '--memory-limit',
+        type=int,
+        default=2048,  # 2GB default
+        help='GPU memory limit in MB'
     )
     parser.add_argument(
         '--epochs',
@@ -87,10 +94,19 @@ def parse_args():
 
 def diagnose_gpu():
     """Diagnose GPU availability and configuration."""
-    print("\n=== GPU Diagnostics ===")
+    print("\n=== System and GPU Diagnostics ===")
+    
+    # System Information
+    print("\n1. System Information:")
+    import psutil
+    total_ram = psutil.virtual_memory().total / (1024 ** 3)  # Convert to GB
+    available_ram = psutil.virtual_memory().available / (1024 ** 3)  # Convert to GB
+    print(f"Total RAM: {total_ram:.2f} GB")
+    print(f"Available RAM: {available_ram:.2f} GB")
+    print(f"CPU Count: {psutil.cpu_count()} cores")
     
     # Check TensorFlow's built-in GPU detection
-    print("\n1. TensorFlow GPU Detection:")
+    print("\n2. TensorFlow GPU Detection:")
     physical_devices = tf.config.list_physical_devices()
     print("All physical devices:", physical_devices)
     
@@ -98,20 +114,48 @@ def diagnose_gpu():
     print("GPU devices:", physical_gpus)
     
     # Check DirectML
-    print("\n2. DirectML Information:")
+    print("\n3. DirectML Information:")
     try:
         import tensorflow_directml as tfdml
         print("TensorFlow DirectML plugin is installed")
         print(f"DirectML plugin version: {tfdml.__version__}")
+        
+        # Get DirectML adapter info
+        try:
+            import ctypes
+            from tensorflow_directml import _pywrap_directml
+            adapter_info = _pywrap_directml.get_adapter_info()
+            print("\nDirectML Adapter Information:")
+            print(f"Description: {adapter_info['Description']}")
+            print(f"Vendor ID: {adapter_info['VendorID']}")
+            print(f"Device ID: {adapter_info['DeviceID']}")
+            print(f"Driver Version: {adapter_info['DriverVersion']}")
+        except Exception as e:
+            print(f"Could not get detailed DirectML adapter info: {e}")
+            
     except ImportError:
         print("TensorFlow DirectML plugin is not installed")
     
     # Print TensorFlow build information
-    print("\n3. TensorFlow Build Information:")
+    print("\n4. TensorFlow Build Information:")
     print(f"TensorFlow version: {tf.__version__}")
+    print(f"Built with CUDA: {tf.test.is_built_with_cuda()}")
+    print(f"Built with ROCm: {tf.test.is_built_with_rocm()}")
+    
+    # Memory information
+    print("\n5. Memory Information:")
+    try:
+        if physical_gpus:
+            for gpu in physical_gpus:
+                memory_info = tf.config.experimental.get_memory_info(gpu.device_type)
+                print(f"\nGPU Memory Info for {gpu.name}:")
+                print(f"Total memory: {memory_info['current'] / (1024**3):.2f} GB")
+                print(f"Peak memory usage: {memory_info['peak'] / (1024**3):.2f} GB")
+    except Exception as e:
+        print(f"Could not get GPU memory info: {e}")
     
     # Try to run a simple operation on GPU
-    print("\n4. Testing GPU Operation:")
+    print("\n6. Testing GPU Operation:")
     try:
         with tf.device('/GPU:0'):
             a = tf.constant([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
@@ -123,23 +167,31 @@ def diagnose_gpu():
         print("Failed to run test operation on GPU")
         print("Error:", str(e))
     
-    print("\n=== End of GPU Diagnostics ===\n")
+    print("\n=== End of System and GPU Diagnostics ===\n")
 
 def configure_gpu():
     """Configure GPU settings for optimal training."""
-    # Check if GPU is available
+    # Get memory limit from arguments
+    args = parse_args()
+    memory_limit_mb = args.memory_limit
+    
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         try:
             # Currently, memory growth needs to be the same across GPUs
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
+                # Set memory limit based on argument
+                tf.config.set_logical_device_configuration(
+                    gpu,
+                    [tf.config.LogicalDeviceConfiguration(memory_limit=memory_limit_mb)]
+                )
             
             # Print GPU information
             print("\nGPU Information:")
             print(f"Number of GPUs available: {len(gpus)}")
             print(f"GPU devices: {gpus}")
-            print("GPU memory growth is enabled")
+            print(f"GPU memory limit set to: {memory_limit_mb}MB")
             
         except RuntimeError as e:
             print(f"\nError configuring GPU: {e}")
@@ -147,9 +199,38 @@ def configure_gpu():
         print("\nNo GPU devices found. Training will proceed on CPU.")
         print("Warning: Training on CPU will be significantly slower!")
 
+def create_dataset_from_array(X, y, batch_size, is_training=True):
+    """Create a TF dataset with memory-efficient loading."""
+    dataset = tf.data.Dataset.from_tensor_slices((X, y))
+    
+    if is_training:
+        # Use a smaller shuffle buffer
+        buffer_size = min(2000, len(X))
+        dataset = dataset.shuffle(buffer_size, reshuffle_each_iteration=True)
+    
+    # Use smaller prefetch and no caching
+    dataset = dataset.batch(batch_size).prefetch(1)
+    return dataset
+
+def cleanup_memory():
+    """Clean up memory before heavy operations."""
+    # Clear TensorFlow session and its memory
+    tf.keras.backend.clear_session()
+    
+    # Clear memory
+    gc.collect()
+    
+    # Print memory status
+    import psutil
+    process = psutil.Process(os.getpid())
+    print(f"\nMemory usage after cleanup: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
 def main():
     # Parse command line arguments
     args = parse_args()
+    
+    # Initial memory cleanup
+    cleanup_memory()
     
     # Run GPU diagnostics
     diagnose_gpu()
@@ -189,12 +270,14 @@ def main():
         print("Please run create_dataset.py first with appropriate arguments.")
         sys.exit(1)
     
-    # Load the pre-processed arrays
+    # Load data in chunks to reduce memory usage
     print(f"Loading pre-processed data for series {series_range}...")
-    X_train = np.load(x_train_path)
-    X_val = np.load(x_val_path)
-    y_train = np.load(y_train_path)
-    y_val = np.load(y_val_path)
+    
+    # Use memory mapping for data loading
+    X_train = np.load(x_train_path, mmap_mode='r')
+    X_val = np.load(x_val_path, mmap_mode='r')
+    y_train = np.load(y_train_path, mmap_mode='r')
+    y_val = np.load(y_val_path, mmap_mode='r')
     
     print("Data loaded successfully!")
     print(f"X_train shape: {X_train.shape}")
@@ -205,14 +288,16 @@ def main():
     # Plot random subsequences
     plot_random_subsequences(X_train, n=5, max_length=args.sequence_length)
     
-    # Create TensorFlow datasets with optimized settings
-    buffer_size = min(10000, len(X_train))  # Prevent excessive memory usage
+    # Memory cleanup before dataset creation
+    cleanup_memory()
     
-    train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
-    train_dataset = train_dataset.cache().shuffle(buffer_size).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+    # Create datasets with memory-efficient loading
+    print("\nCreating TensorFlow datasets...")
+    train_dataset = create_dataset_from_array(X_train, y_train, args.batch_size, is_training=True)
+    val_dataset = create_dataset_from_array(X_val, y_val, args.batch_size, is_training=False)
     
-    val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val))
-    val_dataset = val_dataset.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+    # Memory cleanup before model creation
+    cleanup_memory()
     
     # Get model with adjusted parameters for DirectML
     print("Building model...")

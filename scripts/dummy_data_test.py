@@ -5,6 +5,9 @@ This script demonstrates how to:
 1. Generate synthetic time series data
 2. Initialize and use the transformer model
 3. Generate and visualize forecasts
+
+example ussage:
+python scripts/dummy_data_test.py --model_name transformer_1.0_directml_point_M1_M48000_sampled1000
 """
 
 import argparse

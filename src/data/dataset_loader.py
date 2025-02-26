@@ -6,6 +6,10 @@ from typing import Tuple, Dict, List, Optional
 from sklearn.preprocessing import MinMaxScaler
 from .data_validator import DataValidator
 from .config import DataConfig
+from .series_detrending import SeriesDetrending
+import logging
+
+logger = logging.getLogger(__name__)
 
 class DatasetLoader:
     """Handles loading and initial processing of datasets."""
@@ -14,6 +18,86 @@ class DatasetLoader:
         self.config = config
         self.validator = DataValidator()
         self.sequence_length = 60  # Length of input sequences
+        # Set numpy dtype based on configuration
+        self.dtype = np.float16 if config.dtype_precision == "float16" else np.float32
+        if config.detrend_data:
+            self.detrending = SeriesDetrending(
+                min_points_stl=config.min_points_stl,
+                min_points_linear=config.min_points_linear
+            )
+        
+    def process_series(
+        self,
+        series_long: pd.DataFrame,
+        series_id: str,
+        verbose: bool = True
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Process a single time series, including optional detrending.
+        
+        Args:
+            series_long: DataFrame containing the time series in long format
+            series_id: Identifier for the series
+            verbose: Whether to print progress messages
+            
+        Returns:
+            Tuple of X sequences and y targets
+        """
+        X_sequences = []
+        y_sequences = []
+        
+        # Get the raw values first as float32 to avoid overflow
+        values = series_long['Value'].values.reshape(-1, 1).astype(np.float32)
+        
+        # Apply detrending if enabled (using float32 for calculations)
+        if self.config.detrend_data:
+            try:
+                series = pd.Series(values.flatten(), index=series_long.index)
+                detrended_series, trend_params = self.detrending.remove_trend(
+                    series,
+                    force_linear=self.config.force_linear_detrend
+                )
+                values = detrended_series.values.reshape(-1, 1)
+                logger.info(
+                    f"Detrended series {series_id} using {trend_params['type']} method. "
+                    f"Original range: [{series.min():.4f}, {series.max():.4f}], "
+                    f"Detrended range: [{detrended_series.min():.4f}, {detrended_series.max():.4f}]"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to detrend series {series_id}: {str(e)}")
+                if verbose:
+                    print(f"Warning: Failed to detrend series {series_id}")
+        
+        # Scale the values while still in float32
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_values = scaler.fit_transform(values).flatten()
+        
+        # Now it's safe to convert to float16 as values are between 0 and 1
+        scaled_values = scaled_values.astype(self.dtype)
+        
+        # Create subsequences
+        for start_idx in range(len(scaled_values) - self.sequence_length):
+            subsequence = scaled_values[start_idx:start_idx + self.sequence_length]
+            target = scaled_values[start_idx + self.sequence_length]
+            
+            # Create padded versions with proper masking
+            for i in range(1, len(subsequence) + 1):
+                # Create padded sequence with zeros
+                padded_subsequence = np.zeros(self.sequence_length, dtype=self.dtype)
+                # Fill from the end with actual values
+                padded_subsequence[-i:] = subsequence[-i:]
+                
+                # Add the sequence and target
+                X_sequences.append(padded_subsequence)
+                y_sequences.append(target)
+        
+        X = np.array(X_sequences, dtype=self.dtype)
+        y = np.array(y_sequences, dtype=self.dtype)
+        
+        if verbose:
+            logger.info(f"Created sequences with dtype {X.dtype} - X shape: {X.shape}, y shape: {y.shape}")
+        
+        return X, y
         
     def load_data(
         self, 
@@ -70,12 +154,11 @@ class DatasetLoader:
                 print(f"Filtered data shape: {train_df.shape}")
                 print(f"Number of unique series: {len(train_df['V1'].unique())}")
         
-        # Create sequences for each time series
-        X_sequences = []
-        y_sequences = []
-        
         # Process each series
+        all_X = []
+        all_y = []
         total_series = len(train_df['V1'].unique())
+        
         for idx, series_id in enumerate(train_df['V1'].unique(), 1):
             if verbose:
                 print(f"Processing series {series_id} ({idx}/{total_series})")
@@ -96,33 +179,17 @@ class DatasetLoader:
                     print(f"Skipping series {series_id} due to insufficient data points")
                 continue
             
-            # Scale the values for this series
-            scaler = MinMaxScaler(feature_range=(0, 1))
-            values = series_long['Value'].values.reshape(-1, 1)
-            scaled_values = scaler.fit_transform(values).flatten()
-            
-            # Create subsequences
-            for start_idx in range(len(scaled_values) - self.sequence_length):
-                subsequence = scaled_values[start_idx:start_idx + self.sequence_length]
-                target = scaled_values[start_idx + self.sequence_length]
-                
-                # Create padded versions with proper masking
-                for i in range(1, len(subsequence) + 1):
-                    # Create padded sequence with zeros (which will be masked)
-                    padded_subsequence = np.zeros(self.sequence_length)
-                    # Fill from the end with actual values
-                    padded_subsequence[-i:] = subsequence[-i:]
-                    
-                    # Add the sequence and target
-                    X_sequences.append(padded_subsequence)
-                    y_sequences.append(target)
+            # Process the series
+            X_sequences, y_sequences = self.process_series(series_long, series_id, verbose)
+            all_X.append(X_sequences)
+            all_y.append(y_sequences)
         
-        if not X_sequences:
+        if not all_X:
             raise ValueError("No valid sequences were created. Check the input data.")
         
-        # Convert to numpy arrays with proper dtype for masking
-        X = np.array(X_sequences, dtype=np.float32)
-        y = np.array(y_sequences, dtype=np.float32)
+        # Combine all sequences
+        X = np.vstack(all_X)
+        y = np.concatenate(all_y)
         
         # Reshape X to have a feature dimension
         X = X.reshape((X.shape[0], X.shape[1], 1))

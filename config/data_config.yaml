@@ -5,8 +5,19 @@ processed_data_path: "data/processed"
 
 # Sequence parameters
 extension: 61  # Sequence length
-batch_size: 32
+batch_size: 16  # Reduced from 32 to help with memory usage
 random_seed: 42
 
 # Data split ratios (only applied to training data)
 validation_split: 0.2  # Percentage of training data to use for validation 
+
+# Detrending configuration
+detrending:
+  enabled: true  # Whether to detrend series before creating subsamples
+  min_points_stl: 12  # Minimum points required for STL decomposition
+  min_points_linear: 5  # Minimum points required for linear regression
+  force_linear: false  # Force using linear detrending even if STL is possible 
+
+# Data type configuration
+dtype:
+  precision: "float16"  # Options: "float16", "float32" 
