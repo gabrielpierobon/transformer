@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import random
 from pathlib import Path
 from typing import Tuple, Dict, List, Optional
 from sklearn.preprocessing import MinMaxScaler
@@ -18,6 +19,7 @@ class DatasetLoader:
         self, 
         start_series: Optional[int] = None, 
         end_series: Optional[int] = None,
+        sample_size: Optional[int] = None,
         verbose: bool = True
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -26,6 +28,7 @@ class DatasetLoader:
         Args:
             start_series: Optional starting index for series (e.g., 1 for M1)
             end_series: Optional ending index for series (e.g., 50 for M50)
+            sample_size: Optional number of series to randomly sample from the range
             verbose: Whether to print progress messages
             
         Returns:
@@ -49,10 +52,23 @@ class DatasetLoader:
         # Filter series if start_series and end_series are provided
         if start_series is not None and end_series is not None:
             series_ids = [f"M{i}" for i in range(start_series, end_series + 1)]
+            
+            # If sample_size is provided, randomly sample from the series
+            if sample_size is not None and sample_size < len(series_ids):
+                # Set seed for reproducibility
+                random.seed(42)
+                sampled_indices = random.sample(range(len(series_ids)), sample_size)
+                series_ids = [series_ids[i] for i in sampled_indices]
+                if verbose:
+                    print(f"Randomly sampled {sample_size} series from range M{start_series} through M{end_series}")
+                    print(f"First 10 sampled series: {series_ids[:10] if len(series_ids) > 10 else series_ids}")
+            
             train_df = train_df[train_df['V1'].isin(series_ids)]
             if verbose:
-                print(f"Filtered to series M{start_series} through M{end_series}")
+                if sample_size is None:
+                    print(f"Filtered to series M{start_series} through M{end_series}")
                 print(f"Filtered data shape: {train_df.shape}")
+                print(f"Number of unique series: {len(train_df['V1'].unique())}")
         
         # Create sequences for each time series
         X_sequences = []

@@ -14,13 +14,18 @@ The model introduces several key innovations:
 
 3. **Time-Aware Attention**: The model incorporates positional encoding specifically designed for time series data, enabling it to learn both short-term and long-term dependencies that are common across different types of time series.
 
-4. **Transfer Learning Ready**: The architecture is designed for easy fine-tuning on specific domains while retaining the knowledge learned from the M4 dataset, similar to how BERT and GPT models are pretrained on general text and fine-tuned for specific tasks.
+4. **Intelligent Trend Handling**: The model features sophisticated trend detection and handling:
+   - Automatic detection of sufficient non-zero data points for reliable trend estimation
+   - Support for both STL decomposition and linear regression methods
+   - Dynamic trend continuation with dampening for long-term forecasts
+   - Zero-padding aware calculations to prevent trend distortion
 
 Key Features:
 - Pretrained on diverse time series from M4 competition
 - Easy fine-tuning for specific forecasting tasks
 - Supports recursive multi-step forecasting
-- Provides uncertainty estimates in probabilistic mode
+- Provides uncertainty estimates for both probabilistic and point prediction models
+- Intelligent trend handling with zero-padding awareness
 - GPU-accelerated training and inference
 - Scalable from small datasets to large-scale applications
 
@@ -110,24 +115,30 @@ Parameters:
 - `--batch-size`: Batch size for training (default: 32)
 - `--epochs`: Number of training epochs (default: 50)
 - `--sequence-length`: Length of input sequences (default: 60)
+- `--loss-type`: Type of loss function to use (options: 'mse', 'gaussian_nll', 'smape', 'hybrid')
 
-#### Training Probabilistic Models
+#### Training Models
 
-For probabilistic predictions (mean and variance), add the `--probabilistic` flag and choose a loss function:
+The script supports both point prediction and probabilistic models:
 
-1. Gaussian Negative Log Likelihood (default):
+1. Point Prediction Model (MSE loss):
 ```bash
-python scripts/train.py --start-series 1 --end-series 50 --probabilistic --loss-type gaussian_nll
+python scripts/train.py --start-series 1 --end-series 50 --loss-type mse
 ```
 
-2. Symmetric Mean Absolute Percentage Error (sMAPE):
+2. Probabilistic Model with Gaussian NLL:
 ```bash
-python scripts/train.py --start-series 1 --end-series 50 --probabilistic --loss-type smape
+python scripts/train.py --start-series 1 --end-series 50 --loss-type gaussian_nll
 ```
 
-3. Hybrid Loss (combining sMAPE and Gaussian NLL):
+3. Probabilistic Model with sMAPE:
 ```bash
-python scripts/train.py --start-series 1 --end-series 50 --probabilistic --loss-type hybrid --loss-alpha 0.8
+python scripts/train.py --start-series 1 --end-series 50 --loss-type smape
+```
+
+4. Hybrid Loss (combining sMAPE and Gaussian NLL):
+```bash
+python scripts/train.py --start-series 1 --end-series 50 --loss-type hybrid --loss-alpha 0.8
 ```
 
 The `loss-alpha` parameter controls the weight between sMAPE (alpha) and Gaussian NLL (1-alpha). Higher alpha values give more weight to sMAPE.
@@ -157,11 +168,16 @@ Parameters:
 - `--start-series`: First series to test
 - `--end-series`: Last series to test
 - `--n-steps`: Number of steps to forecast (default: 36)
+- `--loss-type`: Type of loss function used in training (default: 'mse')
+- `--model-path`: Path to the model (optional, will use default if not specified)
 
 This will:
 - Load the trained model
-- Generate recursive predictions
-- Create plots showing the original series and predictions
+- Generate recursive predictions with uncertainty bounds
+- Create plots showing:
+  - Original series (excluding zero padding)
+  - Point predictions
+  - Uncertainty bounds (calculated differently for probabilistic and point prediction models)
 - Save plots in reports/figures/
 
 ## Model Architecture
@@ -172,7 +188,9 @@ The transformer model consists of:
 - Feed-forward networks
 - Layer normalization
 - Global average pooling
-- Output layer (single value for point predictions, or mean and variance for probabilistic)
+- Output layer:
+  - Single value for point predictions
+  - Mean and variance for probabilistic predictions
 
 Key hyperparameters:
 - Sequence length: 60
@@ -180,6 +198,25 @@ Key hyperparameters:
 - Number of heads: 4
 - Feed-forward dimension: 512
 - Dropout rate: 0.05
+
+## Trend Handling
+
+The model implements sophisticated trend handling:
+
+1. **Zero-Padding Awareness**:
+   - Identifies and excludes zero-padded values from trend calculations
+   - Requires minimum number of non-zero points for reliable trend estimation
+   - Preserves trend information only in actual data regions
+
+2. **Multiple Detrending Methods**:
+   - STL Decomposition: For series with sufficient seasonal patterns
+   - Linear Regression: For simpler trend patterns
+   - Automatic method selection based on data characteristics
+
+3. **Trend Continuation**:
+   - Intelligent trend extrapolation for forecasts
+   - Dampening factor to prevent unrealistic long-term growth
+   - Separate handling for different trend types
 
 ## GPU Acceleration
 
