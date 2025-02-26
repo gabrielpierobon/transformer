@@ -1,259 +1,180 @@
-# Transformer for Time Series Forecasting
+# Transformer Time Series Forecasting
 
-## Introduction
+A deep learning project implementing transformer models for time series forecasting, with support for both point predictions and probabilistic forecasting. The project is designed to work with the M4 competition dataset and includes features for efficient data sampling and GPU acceleration via DirectML.
 
-This repository implements a Transformer architecture for time series forecasting that leverages the M4 competition dataset for pretraining. The goal is to create a robust, general-purpose time series model that can be fine-tuned for specific forecasting tasks. By pretraining on M4's diverse collection of 48,000 time series, the model learns fundamental temporal patterns that transfer well to various domains and use cases.
+## Features
 
-The model introduces several key innovations:
-
-1. **Adaptive Sequence Processing**: Unlike traditional Transformers that require fixed-length sequences, our implementation uses a dynamic masking mechanism that allows the model to adapt to any time series length, making it versatile for different applications.
-
-2. **Dual Prediction Modes**:
-   - **Point Predictions**: Direct forecasting of future values using MSE loss, suitable for standard forecasting tasks
-   - **Probabilistic Forecasting**: Uncertainty estimation by predicting both mean and variance, critical for risk assessment and decision-making
-
-3. **Time-Aware Attention**: The model incorporates positional encoding specifically designed for time series data, enabling it to learn both short-term and long-term dependencies that are common across different types of time series.
-
-4. **Intelligent Trend Handling**: The model features sophisticated trend detection and handling:
-   - Automatic detection of sufficient non-zero data points for reliable trend estimation
-   - Support for both STL decomposition and linear regression methods
-   - Dynamic trend continuation with dampening for long-term forecasts
-   - Zero-padding aware calculations to prevent trend distortion
-
-Key Features:
-- Pretrained on diverse time series from M4 competition
-- Easy fine-tuning for specific forecasting tasks
-- Supports recursive multi-step forecasting
-- Provides uncertainty estimates for both probabilistic and point prediction models
-- Intelligent trend handling with zero-padding awareness
-- GPU-accelerated training and inference
-- Scalable from small datasets to large-scale applications
-
-## Setup
-
-1. Create a virtual environment and activate it:
-```bash
-python -m venv venv_directml
-.\venv_directml\Scripts\activate
-```
-
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-The main dependencies are:
-- TensorFlow 2.10.0 with DirectML support
-- NumPy 1.24.3
-- Pandas 2.1.4
-- Matplotlib 3.10.0
-- scikit-learn 1.6.1
+- 🤖 Transformer-based architecture with multi-head attention
+- 📊 Support for both point predictions and probabilistic forecasting
+- 🎯 Multiple loss functions: MSE, Gaussian NLL, sMAPE, and hybrid loss
+- 🔄 Efficient data sampling for quick experimentation
+- 💻 GPU acceleration with DirectML (supports both NVIDIA and AMD GPUs)
+- 📈 Comprehensive visualization tools
+- 🧪 Validation and testing pipeline
 
 ## Project Structure
 
 ```
-├── config/
-│   └── data_config.yaml     # Configuration for data processing
-├── data/
-│   ├── raw/                 # Raw M4 competition data
-│   └── processed/           # Processed numpy arrays
-├── models/
-│   ├── checkpoints/         # Model checkpoints during training
-│   └── final/              # Final trained models
-├── reports/
-│   └── figures/            # Generated plots and visualizations
-├── scripts/
-│   ├── create_dataset.py   # Create processed datasets
-│   ├── validate_dataset.py # Validate processed datasets
-│   ├── train.py           # Train the transformer model
-│   └── test_predictions.py # Test model predictions
-└── src/
-    ├── data/              # Data processing modules
-    ├── models/            # Model architecture
-    └── visualization/     # Plotting utilities
+.
+├── api/                # API implementation
+├── config/             # Configuration files
+├── data/              # Data directory
+│   ├── raw/           # Raw M4 competition data
+│   └── processed/     # Processed numpy arrays
+├── docs/              # Documentation
+├── logs/              # Training logs
+├── models/            # Saved models
+│   ├── checkpoints/   # Model checkpoints
+│   └── final/         # Final trained models
+├── reports/           # Generated analysis reports
+│   └── figures/       # Generated graphics
+├── scripts/           # Utility scripts
+├── src/               # Source code
+│   ├── data/          # Data processing modules
+│   ├── models/        # Model implementations
+│   └── visualization/ # Visualization tools
+└── tests/             # Test files
 ```
 
-## Workflow
+## Installation
 
-### 1. Data Preparation
+1. Clone the repository:
+```bash
+git clone [repository-url]
+cd transformer
+```
 
-First, create the processed tensors from the raw M4 data:
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv_directml
+source venv_directml/bin/activate  # Linux/Mac
+# OR
+.\\venv_directml\\Scripts\\activate  # Windows
+```
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+## Quick Start
+
+### 1. Verify GPU Setup
 
 ```bash
-python scripts/create_dataset.py --start-series 1 --end-series 50
+python scripts/verify_gpu.py
 ```
 
-This will:
-- Load the raw M4 monthly data
-- Process series M1 through M50
-- Create sequences with proper padding
-- Save the processed arrays in data/processed/
+### 2. Create Dataset
 
-You can validate the created tensors:
+For quick experimentation with 1000 series:
+```bash
+python scripts/create_dataset.py --start-series 1 --end-series 48000 --sample-size 1000
+```
+
+For full dataset:
+```bash
+python scripts/create_dataset.py --start-series 1 --end-series 48000
+```
+
+### 3. Train Models
+
+Train a point prediction model:
+```bash
+python scripts/train.py --start-series 1 --end-series 48000 --sample-size 1000
+```
+
+Train a probabilistic model:
+```bash
+python scripts/train.py --start-series 1 --end-series 48000 --sample-size 1000 --probabilistic --loss-type gaussian_nll
+```
+
+## Model Types
+
+### Point Prediction Model
+
+- Outputs single value predictions
+- Uses MSE loss by default
+- Metrics include MAE
+- Best for applications requiring exact value forecasts
+
+### Probabilistic Model
+
+- Outputs both mean and uncertainty estimates
+- Three loss function options:
+  1. `gaussian_nll`: Gaussian Negative Log Likelihood
+  2. `smape`: Symmetric Mean Absolute Percentage Error
+  3. `hybrid`: Combination of sMAPE and Gaussian NLL
+- Best for applications requiring uncertainty quantification
+
+## Training Options
+
+Key command-line arguments:
 
 ```bash
-python scripts/validate_dataset.py --start-series 1 --end-series 50
+--start-series INT     # Starting series index
+--end-series INT      # Ending series index
+--sample-size INT     # Number of series to sample
+--batch-size INT      # Training batch size
+--epochs INT          # Number of training epochs
+--sequence-length INT # Input sequence length
+--probabilistic       # Enable probabilistic predictions
+--loss-type STR      # Loss function type
+--loss-alpha FLOAT   # Weight for hybrid loss
 ```
 
-This will:
-- Load the processed arrays
-- Display basic statistics
-- Show sample sequences
-- Generate validation plots
+## Resource Requirements
 
-### 2. Training
+Memory usage scales with sample size:
+- 100 series: ~2GB RAM
+- 1,000 series: ~8GB RAM
+- 10,000 series: ~40GB RAM
 
-Train the transformer model:
+Training time (approximate):
+- 100 series: ~1 hour
+- 1,000 series: ~10 hours
+- 10,000 series: ~100 hours
 
+## Best Practices
+
+1. Start with small samples (100-500 series) for initial experiments
+2. Use medium samples (1,000-5,000) for architecture tuning
+3. Use large samples (10,000+) for final validation
+4. Train on full dataset for production deployment
+5. Monitor GPU memory usage during training
+6. Use consistent random seeds for reproducibility
+
+## Evaluation
+
+Models are evaluated using:
+- Validation set (20% of processed sequences)
+- Multiple metrics (MAE, MSE, NLL for probabilistic models)
+- Visualization of predictions and uncertainty
+
+Run evaluation:
 ```bash
-python scripts/train.py --start-series 1 --end-series 50 --batch-size 32 --epochs 50
+python scripts/test_predictions.py --start-series 1 --end-series 48000 --sample-size 1000 --n-steps 36
 ```
 
-Parameters:
-- `--start-series`: First series to include (e.g., 1 for M1)
-- `--end-series`: Last series to include (e.g., 50 for M50)
-- `--batch-size`: Batch size for training (default: 32)
-- `--epochs`: Number of training epochs (default: 50)
-- `--sequence-length`: Length of input sequences (default: 60)
-- `--loss-type`: Type of loss function to use (options: 'mse', 'gaussian_nll', 'smape', 'hybrid')
+## Documentation
 
-#### Training Models
+For detailed information about specific features:
 
-The script supports both point prediction and probabilistic models:
+- [Sampling Large Datasets](docs/sampling_large_datasets.md)
 
-1. Point Prediction Model (MSE loss):
-```bash
-python scripts/train.py --start-series 1 --end-series 50 --loss-type mse
-```
+## Contributing
 
-2. Probabilistic Model with Gaussian NLL:
-```bash
-python scripts/train.py --start-series 1 --end-series 50 --loss-type gaussian_nll
-```
-
-3. Probabilistic Model with sMAPE:
-```bash
-python scripts/train.py --start-series 1 --end-series 50 --loss-type smape
-```
-
-4. Hybrid Loss (combining sMAPE and Gaussian NLL):
-```bash
-python scripts/train.py --start-series 1 --end-series 50 --loss-type hybrid --loss-alpha 0.8
-```
-
-The `loss-alpha` parameter controls the weight between sMAPE (alpha) and Gaussian NLL (1-alpha). Higher alpha values give more weight to sMAPE.
-
-Model files will be saved with descriptive names indicating the type:
-- Point predictions: `transformer_1.0_directml_point_M1_M50/`
-- Probabilistic with Gaussian NLL: `transformer_1.0_directml_proba_gaussian_nll_M1_M50/`
-- Probabilistic with sMAPE: `transformer_1.0_directml_proba_smape_M1_M50/`
-- Probabilistic with Hybrid loss: `transformer_1.0_directml_proba_hybrid_0.8_M1_M50/`
-
-The training script will:
-- Create a transformer model
-- Train using DirectML GPU acceleration
-- Save checkpoints in models/checkpoints/
-- Save the final model in models/final/
-- Generate training plots in reports/figures/
-
-### 3. Testing
-
-Test the trained model's predictions:
-
-```bash
-python scripts/test_predictions.py --start-series 1 --end-series 2 --n-steps 36
-```
-
-Parameters:
-- `--start-series`: First series to test
-- `--end-series`: Last series to test
-- `--n-steps`: Number of steps to forecast (default: 36)
-- `--loss-type`: Type of loss function used in training (default: 'mse')
-- `--model-path`: Path to the model (optional, will use default if not specified)
-
-This will:
-- Load the trained model
-- Generate recursive predictions with uncertainty bounds
-- Create plots showing:
-  - Original series (excluding zero padding)
-  - Point predictions
-  - Uncertainty bounds (calculated differently for probabilistic and point prediction models)
-- Save plots in reports/figures/
-
-## Model Architecture
-
-The transformer model consists of:
-- Input embeddings with positional encoding
-- Multi-head self-attention layers
-- Feed-forward networks
-- Layer normalization
-- Global average pooling
-- Output layer:
-  - Single value for point predictions
-  - Mean and variance for probabilistic predictions
-
-Key hyperparameters:
-- Sequence length: 60
-- Model dimension: 512
-- Number of heads: 4
-- Feed-forward dimension: 512
-- Dropout rate: 0.05
-
-## Trend Handling
-
-The model implements sophisticated trend handling:
-
-1. **Zero-Padding Awareness**:
-   - Identifies and excludes zero-padded values from trend calculations
-   - Requires minimum number of non-zero points for reliable trend estimation
-   - Preserves trend information only in actual data regions
-
-2. **Multiple Detrending Methods**:
-   - STL Decomposition: For series with sufficient seasonal patterns
-   - Linear Regression: For simpler trend patterns
-   - Automatic method selection based on data characteristics
-
-3. **Trend Continuation**:
-   - Intelligent trend extrapolation for forecasts
-   - Dampening factor to prevent unrealistic long-term growth
-   - Separate handling for different trend types
-
-## GPU Acceleration
-
-The model uses DirectML for GPU acceleration, supporting both NVIDIA and AMD GPUs. The training script will automatically detect and use available GPUs.
-
-## Results
-
-The model generates:
-- Training history plots (loss and metrics)
-- Prediction plots for validation series
-- Performance metrics (MSE, MAE)
-
-Results are saved in:
-- Model checkpoints: models/checkpoints/
-- Final models: models/final/
-- Plots: reports/figures/
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
 
 ## License
 
-MIT License
+[Your License Here]
 
-Copyright (c) 2024 [Your Name]
+## Acknowledgments
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+- M4 Competition for the dataset
+- Microsoft for DirectML support
