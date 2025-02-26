@@ -40,7 +40,7 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         logger.error(f"Error loading config: {str(e)}")
         raise
 
-def create_dataset(config: DataConfig, start_series: int = None, end_series: int = None) -> None:
+def create_dataset(config: DataConfig, start_series: int = None, end_series: int = None, sample_size: int = None) -> None:
     """
     Create processed dataset from raw data.
     
@@ -48,6 +48,7 @@ def create_dataset(config: DataConfig, start_series: int = None, end_series: int
         config: Data processing configuration
         start_series: Optional starting index for series (e.g., 1 for M1)
         end_series: Optional ending index for series (e.g., 50 for M50)
+        sample_size: Optional number of series to randomly sample
     """
     try:
         logger.info("Initializing data pipeline components...")
@@ -57,7 +58,8 @@ def create_dataset(config: DataConfig, start_series: int = None, end_series: int
         logger.info("Loading and processing data...")
         X_train, y_train, X_val, y_val = loader.load_data(
             start_series=start_series,
-            end_series=end_series
+            end_series=end_series,
+            sample_size=sample_size
         )
 
         # Create output directory if it doesn't exist
@@ -66,6 +68,10 @@ def create_dataset(config: DataConfig, start_series: int = None, end_series: int
 
         # Define output paths with series range in filename if specified
         series_suffix = f"_M{start_series}_M{end_series}" if start_series and end_series else ""
+        
+        # Add sample information to the filename if sampling was used
+        if sample_size is not None:
+            series_suffix += f"_sampled{sample_size}"
         
         # Save processed data
         logger.info(f"Saving processed data to {output_dir}")
@@ -99,6 +105,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help='Ending series index (e.g., 50 for M50)'
     )
+    parser.add_argument(
+        '--sample-size',
+        type=int,
+        help='Number of series to randomly sample from the range (optional)'
+    )
     return parser.parse_args()
 
 def main():
@@ -130,7 +141,8 @@ def main():
         create_dataset(
             config,
             start_series=args.start_series,
-            end_series=args.end_series
+            end_series=args.end_series,
+            sample_size=args.sample_size
         )
         
     except Exception as e:

@@ -29,6 +29,11 @@ def parse_args():
         default=500,
         help='Ending series index (e.g., 500 for M500)'
     )
+    parser.add_argument(
+        '--sample-size',
+        type=int,
+        help='Number of series used in sampling (if the dataset was sampled)'
+    )
     
     # Training parameters
     parser.add_argument(
@@ -158,6 +163,10 @@ def main():
 
     # Create series range string
     series_range = f'M{args.start_series}_M{args.end_series}'
+    
+    # Add sampling information if provided
+    if args.sample_size is not None:
+        series_range += f'_sampled{args.sample_size}'
     
     # Add model type and loss type to version
     model_type = 'proba' if args.probabilistic else 'point'
