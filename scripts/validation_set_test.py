@@ -92,8 +92,8 @@ def plot_comparison(
     title: str = "Forecast vs Ground Truth"
 ) -> None:
     """
-    Plot historical data, forecast, and ground truth.
-
+    Plot comparison between historical data, forecast, and ground truth.
+    
     Args:
         historical_df: DataFrame with historical data
         forecast_df: DataFrame with forecast data
@@ -111,8 +111,8 @@ def plot_comparison(
     # Plot confidence interval
     plt.fill_between(
         forecast_df["ds"],
-        forecast_df["q_0.3"],
-        forecast_df["q_0.7"],
+        forecast_df["q_0.30"],
+        forecast_df["q_0.70"],
         color="red",
         alpha=0.2,
         label="Confidence Interval"
