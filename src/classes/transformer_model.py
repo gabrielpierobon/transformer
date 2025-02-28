@@ -52,6 +52,7 @@ class TransformerModel:
         self,
         model_name: str,
         input_series_length: int = 60,
+        inference_config_path: str = None,
     ):
         """
         Initializes the TransformerModel with a local model.
@@ -61,6 +62,8 @@ class TransformerModel:
                       (e.g., "transformer_1.0_directml_proba_hybrid_0.8_M1_M2")
             input_series_length: Expected length of input time series for the model.
                                Defaults to 60.
+            inference_config_path: Path to the inference configuration file.
+                                 If None, will look for config/inference_config.yaml.
 
         Raises:
             ValueError: If model loading fails or if model directory doesn't exist.
@@ -93,6 +96,7 @@ class TransformerModel:
                 proba_model=self.proba_model,
                 data_scaler=self.data_scaler,
                 is_probabilistic=self.is_probabilistic,
+                config_path=inference_config_path,
             )
             logger.info("TransformerModel initialization complete")
 
@@ -107,6 +111,7 @@ class TransformerModel:
         num_samples: int = 1000,
         low_bound_conf: int = 30,
         high_bound_conf: int = 70,
+        force_linear_detrend: bool = False,
     ) -> pd.DataFrame:
         """
         Generates forecasts with confidence intervals for given time series data.
@@ -121,6 +126,8 @@ class TransformerModel:
                           Defaults to 30.
             high_bound_conf: Upper percentile for confidence intervals.
                            Defaults to 70.
+            force_linear_detrend: Force using linear detrending even if STL is possible.
+                                 Only applies if detrending is enabled in config.
 
         Returns:
             DataFrame containing the forecasted values and confidence intervals.
@@ -150,6 +157,7 @@ class TransformerModel:
                 input_series_length=self.input_series_length,
                 low_bound_conf=low_bound_conf,
                 high_bound_conf=high_bound_conf,
+                force_linear_detrend=force_linear_detrend,
             )
             
             logger.info("Successfully generated forecasts")
@@ -159,12 +167,25 @@ class TransformerModel:
             logger.error(f"Error generating forecasts: {str(e)}")
             raise ValueError(f"Forecast generation failed: {str(e)}")
 
-    def plot_forecast(self, historical_df: pd.DataFrame, forecast_df: pd.DataFrame) -> None:
+    def plot_forecast(
+        self, 
+        historical_df: pd.DataFrame, 
+        forecast_df: pd.DataFrame,
+        low_bound_conf: int = 30,
+        high_bound_conf: int = 70
+    ) -> None:
         """
         Plot historical data and forecast with confidence intervals.
 
         Args:
             historical_df: DataFrame containing historical data.
             forecast_df: DataFrame containing forecast data.
+            low_bound_conf: Lower confidence bound percentile (default: 30)
+            high_bound_conf: Upper confidence bound percentile (default: 70)
         """
-        self.forecast_generator.plot_forecast(historical_df, forecast_df) 
+        self.forecast_generator.plot_forecast(
+            historical_df, 
+            forecast_df,
+            low_bound_conf,
+            high_bound_conf
+        ) 

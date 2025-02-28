@@ -1,0 +1,17 @@
+# Inference Configuration
+
+# Whether to apply detrending during inference
+# If true, the forecast generator will perform trend decomposition and recomposition
+# If false, no detrending/retrending will be applied
+apply_detrending: true
+
+# Minimum points required for different detrending methods
+min_points_stl: 12
+min_points_linear: 5
+
+# Confidence interval settings
+default_low_bound_conf: 30
+default_high_bound_conf: 70
+
+# Number of samples for uncertainty estimation
+default_num_samples: 1000 
