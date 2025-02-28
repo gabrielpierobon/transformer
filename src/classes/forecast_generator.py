@@ -6,6 +6,9 @@ including trend decomposition, scaling, and uncertainty estimation.
 """
 
 import logging
+import os
+import yaml
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
 import numpy as np
@@ -33,6 +36,7 @@ class ForecastGenerator:
         data_scaler: Scaler object for data normalization
         is_probabilistic (bool): Whether the model is probabilistic
         detrending (SeriesDetrending): Handler for series detrending operations
+        apply_detrending (bool): Whether to apply detrending during inference
     """
 
     def __init__(
@@ -41,7 +45,8 @@ class ForecastGenerator:
         data_scaler, 
         is_probabilistic: bool = False,
         min_points_stl: int = 12,
-        min_points_linear: int = 5
+        min_points_linear: int = 5,
+        config_path: str = None
     ):
         """
         Initialize the ForecastGenerator.
@@ -52,14 +57,67 @@ class ForecastGenerator:
             is_probabilistic: Whether the model outputs mean and std or just point predictions
             min_points_stl: Minimum points required for STL decomposition
             min_points_linear: Minimum points required for linear regression
+            config_path: Path to the inference configuration file
         """
         self.proba_model = proba_model
         self.data_scaler = data_scaler
         self.is_probabilistic = is_probabilistic
+        
+        # Load inference configuration
+        self.config = self._load_inference_config(config_path)
+        
+        # Override min_points parameters if provided in config
+        min_points_stl = self.config.get('min_points_stl', min_points_stl)
+        min_points_linear = self.config.get('min_points_linear', min_points_linear)
+        
+        # Get detrending configuration
+        self.apply_detrending = self.config.get('apply_detrending', True)
+        logger.info(f"Detrending during inference is {'enabled' if self.apply_detrending else 'disabled'}")
+        
         self.detrending = SeriesDetrending(
             min_points_stl=min_points_stl,
             min_points_linear=min_points_linear
         )
+
+    def _load_inference_config(self, config_path: str = None) -> Dict:
+        """
+        Load inference configuration from YAML file.
+        
+        Args:
+            config_path: Path to the inference configuration file
+            
+        Returns:
+            Dictionary containing configuration parameters
+        """
+        # Default configuration
+        default_config = {
+            'apply_detrending': True,
+            'min_points_stl': 12,
+            'min_points_linear': 5,
+            'default_low_bound_conf': 30,
+            'default_high_bound_conf': 70,
+            'default_num_samples': 1000
+        }
+        
+        # If no config path provided, look in standard location
+        if config_path is None:
+            # Try to find config in the standard location
+            project_root = Path(__file__).resolve().parents[2]
+            config_path = os.path.join(project_root, 'config', 'inference_config.yaml')
+        
+        # Load configuration if file exists
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as file:
+                    config = yaml.safe_load(file)
+                logger.info(f"Loaded inference configuration from {config_path}")
+                return config
+            except Exception as e:
+                logger.warning(f"Error loading inference config: {str(e)}. Using default configuration.")
+                return default_config
+        else:
+            logger.warning(f"Inference config file not found at {config_path}. Using default configuration.")
+            return default_config
 
     def generate_single_step_forecast(
         self,
@@ -186,23 +244,36 @@ class ForecastGenerator:
         """
         logger.info(f"Original data range: {group_df['y'].min()} to {group_df['y'].max()}")
 
-        # Get trend strength before detrending
-        trend_strength = self.detrending.get_trend_strength(group_df["y"])
-        logger.info(f"Detected trend strength: {trend_strength:.4f}")
-
-        # 1. Remove trend
-        detrended_series, trend_params = self.detrending.remove_trend(
-            group_df["y"],
-            force_linear=force_linear_detrend
-        )
-        logger.info(
-            f"Detrending method: {trend_params['type']}, "
-            f"Data range after detrending: [{detrended_series.min():.4f}, {detrended_series.max():.4f}]"
-        )
+        # Get the original series values
+        original_series = group_df["y"].values
         
-        # 2. Scale the detrended data
-        series_scaled = self.data_scaler.scale(detrended_series.values.reshape(-1, 1)).flatten()
-        logger.info(f"Scaled detrended data range: [{series_scaled.min():.4f}, {series_scaled.max():.4f}]")
+        if self.apply_detrending:
+            # Get trend strength before detrending
+            trend_strength = self.detrending.get_trend_strength(group_df["y"])
+            logger.info(f"Detected trend strength: {trend_strength:.4f}")
+
+            # 1. Remove trend
+            detrended_series, trend_params = self.detrending.remove_trend(
+                group_df["y"],
+                force_linear=force_linear_detrend
+            )
+            logger.info(
+                f"Detrending method: {trend_params['type']}, "
+                f"Data range after detrending: [{detrended_series.min():.4f}, {detrended_series.max():.4f}]"
+            )
+            
+            # Use detrended series for scaling
+            series_to_scale = detrended_series.values
+        else:
+            # Skip detrending, use original series
+            logger.info("Detrending is disabled, using original series")
+            series_to_scale = original_series
+            # Create dummy trend params for later
+            trend_params = {'type': 'none'}
+        
+        # 2. Scale the data (detrended or original)
+        series_scaled = self.data_scaler.scale(series_to_scale.reshape(-1, 1)).flatten()
+        logger.info(f"Scaled data range: [{series_scaled.min():.4f}, {series_scaled.max():.4f}]")
         
         # Add padding if needed
         padding_length = max(0, input_series_length[0] - len(series_scaled))
@@ -246,14 +317,24 @@ class ForecastGenerator:
                 index=future_dates
             )
             
-            # Add trend back
-            forecast_df["q_0.5"] = self.detrending.add_trend(predictions_unscaled, trend_params, future_dates)
-            forecast_df[f"q_0.{low_bound_conf}"] = self.detrending.add_trend(lower_unscaled, trend_params, future_dates)
-            forecast_df[f"q_0.{high_bound_conf}"] = self.detrending.add_trend(upper_unscaled, trend_params, future_dates)
+            if self.apply_detrending:
+                # Add trend back if detrending was applied
+                forecast_df["q_0.5"] = self.detrending.add_trend(predictions_unscaled, trend_params, future_dates)
+                forecast_df[f"q_0.{low_bound_conf}"] = self.detrending.add_trend(lower_unscaled, trend_params, future_dates)
+                forecast_df[f"q_0.{high_bound_conf}"] = self.detrending.add_trend(upper_unscaled, trend_params, future_dates)
+            else:
+                # Use unscaled values directly if no detrending
+                forecast_df["q_0.5"] = predictions_unscaled
+                forecast_df[f"q_0.{low_bound_conf}"] = lower_unscaled
+                forecast_df[f"q_0.{high_bound_conf}"] = upper_unscaled
         else:
-            # Add trend back to point predictions only
-            forecast_df["q_0.5"] = self.detrending.add_trend(predictions_unscaled, trend_params, future_dates)
-        
+            if self.apply_detrending:
+                # Add trend back to point predictions if detrending was applied
+                forecast_df["q_0.5"] = self.detrending.add_trend(predictions_unscaled, trend_params, future_dates)
+            else:
+                # Use unscaled values directly if no detrending
+                forecast_df["q_0.5"] = predictions_unscaled
+            
         # Add unique_id if present in original data
         if "unique_id" in group_df.columns:
             forecast_df["unique_id"] = group_df["unique_id"].iloc[0]
@@ -274,6 +355,7 @@ class ForecastGenerator:
         input_series_length: int,
         low_bound_conf: int,
         high_bound_conf: int,
+        force_linear_detrend: bool = False,
     ) -> pd.DataFrame:
         """
         Generate forecasts for multiple time series.
@@ -285,6 +367,7 @@ class ForecastGenerator:
             input_series_length: Length of input sequence
             low_bound_conf: Lower confidence bound percentile
             high_bound_conf: Upper confidence bound percentile
+            force_linear_detrend: Force using linear detrending even if STL is possible
 
         Returns:
             DataFrame containing forecasts for all series
@@ -299,7 +382,8 @@ class ForecastGenerator:
                     num_samples,
                     input_series_length,
                     low_bound_conf,
-                    high_bound_conf
+                    high_bound_conf,
+                    force_linear_detrend
                 )
                 combined_predictions.append(predicted_series)
                 logger.info(f"Predictions for {unique_id}:\n{predicted_series}")
