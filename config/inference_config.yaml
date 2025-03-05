@@ -3,7 +3,7 @@
 # Whether to apply detrending during inference
 # If true, the forecast generator will perform trend decomposition and recomposition
 # If false, no detrending/retrending will be applied
-apply_detrending: true
+apply_detrending: false
 
 # Minimum points required for different detrending methods
 min_points_stl: 12

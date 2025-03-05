@@ -341,6 +341,9 @@ def main():
             log_dir=str(log_dir / f'transformer_{model_version}'),
             histogram_freq=1,
             update_freq='epoch'
+        ),
+        tf.keras.callbacks.LambdaCallback(
+            on_epoch_end=lambda epoch, logs: cleanup_memory()
         )
     ]
     
