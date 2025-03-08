@@ -71,11 +71,49 @@ class ModelLoader:
                 custom_objects["loss"] = gaussian_nll
                 custom_objects["gaussian_nll"] = gaussian_nll
 
-            model = tf.keras.models.load_model(
-                self.model_path,
-                custom_objects=custom_objects,
-            )
-            logger.info(f"Successfully loaded local model from {self.model_path}")
+            # Check if the path is a directory (SavedModel format) or a file (weights only)
+            if os.path.isdir(self.model_path):
+                # Load the full model (old format)
+                model = tf.keras.models.load_model(
+                    self.model_path,
+                    custom_objects=custom_objects,
+                )
+                logger.info(f"Successfully loaded local model from directory {self.model_path}")
+            else:
+                # Load model architecture and then weights (new format)
+                from src.models.transformer import get_model
+                
+                # Extract model parameters from the model name
+                model_name = os.path.basename(self.model_path)
+                is_probabilistic = "proba" in model_name.lower()
+                
+                # Determine loss type from model name
+                loss_type = "gaussian_nll"  # Default for probabilistic models
+                if not is_probabilistic:
+                    if "gaussian_nll" in model_name:
+                        loss_type = "gaussian_nll"
+                    elif "smape" in model_name:
+                        loss_type = "smape"
+                    elif "hybrid" in model_name:
+                        loss_type = "hybrid"
+                    else:
+                        # For older point models, default to smape unless specified
+                        loss_type = "smape"
+                
+                # Create model with the same architecture
+                model = get_model(
+                    sequence_length=60,  # Default value, will be overridden by weights
+                    probabilistic=is_probabilistic,
+                    loss_type=loss_type
+                )
+                
+                # Compile the model to ensure it has the right loss function
+                model.compile()
+                
+                # Load weights
+                model.load_weights(self.model_path)
+                logger.info(f"Successfully loaded model weights from {self.model_path}")
+            
             return model
 
         except Exception as e:

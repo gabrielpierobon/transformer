@@ -205,7 +205,7 @@ def get_model(sequence_length=60, probabilistic=True, loss_type='gaussian_nll', 
     Args:
         sequence_length (int): Length of input sequences
         probabilistic (bool): Whether to use probabilistic predictions
-        loss_type (str): Type of loss function ('gaussian_nll', 'smape', or 'hybrid')
+        loss_type (str): Type of loss function ('gaussian_nll', 'smape', 'hybrid', or 'mse')
         loss_alpha (float): Weight for sMAPE in hybrid loss (1-alpha for Gaussian NLL)
     """
     model = build_transformer_model(
@@ -229,9 +229,17 @@ def get_model(sequence_length=60, probabilistic=True, loss_type='gaussian_nll', 
         elif loss_type == 'hybrid':
             loss = hybrid_loss(alpha=loss_alpha)
         else:
-            raise ValueError(f"Unknown loss type: {loss_type}")
+            raise ValueError(f"Unknown loss type for probabilistic model: {loss_type}")
     else:
-        loss = 'mse'
+        # Point model loss options
+        if loss_type == 'smape':
+            loss = smape_loss
+        elif loss_type == 'mse':
+            loss = 'mse'  # Use TensorFlow's built-in MSE loss
+        else:
+            # Default to MSE for point models if an unsupported loss is specified
+            print(f"Warning: Loss type '{loss_type}' not supported for point models. Using MSE instead.")
+            loss = 'mse'
     
     # Custom MAE metric for probabilistic model that only uses mean prediction
     if probabilistic:
