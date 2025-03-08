@@ -160,7 +160,13 @@ python scripts/test_predictions.py --start-series 1 --end-series 48000 --sample-
 
 For detailed information about specific features:
 
+- [Quick Training Guide](docs/QUICK_TRAINING_GUIDE.md)
 - [Sampling Large Datasets](docs/sampling_large_datasets.md)
+- [M4 Evaluation Guide](docs/m4_evaluation_guide.md)
+- [Continue Training Guide](docs/continue_training_guide.md)
+- [Example Runs](docs/example_runs.md)
+- [Model Format Guide](docs/model_format_guide.md)
+- [Training Performance Optimization](docs/training_performance.md)
 
 ## Contributing
 

@@ -150,7 +150,16 @@ When analyzing the results, pay attention to:
    ```
    ValueError: Model directory not found
    ```
-   Check that the specified model exists in the `models/final/` directory.
+   This error often occurs when trying to evaluate a model saved in the weights-only format. See [Understanding Model Formats and Conversion](model_format_guide.md) for details on how to fix this issue.
+   
+   Quick fix:
+   ```bash
+   python scripts/fix_model_format.py your_model_name
+   ```
+   Then evaluate using:
+   ```bash
+   python scripts/evaluate_m4.py --model_name your_model_name_full --sample_size 400
+   ```
 
 3. **Memory issues with large sample sizes**:
    If evaluating many series, you might encounter memory issues. Try reducing the sample size or running on a machine with more RAM.
