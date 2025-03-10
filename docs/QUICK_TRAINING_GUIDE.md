@@ -6,11 +6,16 @@ This guide provides a sequential workflow for training and evaluating transforme
 
 ```bash
 # Create a full dataset
-python scripts/create_dataset.py --start-series 1 --end-series 48000
+python scripts/create_dataset.py --start-series 1 --end-series 48000 --random-seed 42
 
 # Create a sampled dataset (faster)
-python scripts/create_dataset.py --start-series 1 --end-series 48000 --sample-size 1000
+python scripts/create_dataset.py --start-series 1 --end-series 48000 --sample-size 1000 --random-seed 42
+
+# Create a different sample using a different seed
+python scripts/create_dataset.py --start-series 1 --end-series 48000 --sample-size 1000 --random-seed 43
 ```
+
+The `--random-seed` parameter ensures reproducible sampling and allows you to create different samples by changing the seed value.
 
 ## 2. Training a New Model
 
@@ -56,6 +61,10 @@ python scripts/continue_training.py models/final/transformer_1.0_directml_point_
 
 # Optimized continuation
 python scripts/continue_training.py models/final/transformer_1.0_directml_point_mse_M1_M48000_sampled1000 --epochs 10 --loss-type mse --disable-memory-growth --batch-size 64 --aggressive-cleanup
+
+# Continue training with a different sample (create a new dataset first with a different seed)
+python scripts/create_dataset.py --start-series 1 --end-series 48000 --sample-size 2000 --random-seed 43
+python scripts/continue_training.py models/final/transformer_1.0_directml_point_mse_M1_M48000_sampled1000 --epochs 10 --loss-type mse --start-series 1 --end-series 48000 --sample-size 2000
 ```
 
 ## 5. Evaluating on the M4 Test Set

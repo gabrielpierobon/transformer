@@ -42,7 +42,7 @@ def load_config(config_path: str) -> DataConfig:
         dtype_precision=config.get('dtype', {}).get('precision', 'float16')
     )
 
-def create_dataset(config: DataConfig, start_series: int = None, end_series: int = None, sample_size: int = None) -> None:
+def create_dataset(config: DataConfig, start_series: int = None, end_series: int = None, sample_size: int = None, random_seed: int = 42) -> None:
     """
     Create processed dataset from raw data.
     
@@ -51,17 +51,19 @@ def create_dataset(config: DataConfig, start_series: int = None, end_series: int
         start_series: Optional starting index for series (e.g., 1 for M1)
         end_series: Optional ending index for series (e.g., 50 for M50)
         sample_size: Optional number of series to randomly sample
+        random_seed: Random seed for reproducible sampling
     """
     try:
         logger.info("Initializing data pipeline components...")
         loader = DatasetLoader(config)
 
         # Load and process data
-        logger.info("Loading and processing data...")
+        logger.info(f"Loading and processing data with random seed: {random_seed}...")
         X_train, y_train, X_val, y_val = loader.load_data(
             start_series=start_series,
             end_series=end_series,
-            sample_size=sample_size
+            sample_size=sample_size,
+            random_seed=random_seed
         )
 
         # Create output directory if it doesn't exist
@@ -112,6 +114,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help='Number of series to randomly sample from the range (optional)'
     )
+    parser.add_argument(
+        '--random-seed',
+        type=int,
+        required=True,
+        help='Random seed for reproducible sampling (required)'
+    )
     return parser.parse_args()
 
 def main():
@@ -140,7 +148,8 @@ def main():
             config,
             start_series=args.start_series,
             end_series=args.end_series,
-            sample_size=args.sample_size
+            sample_size=args.sample_size,
+            random_seed=args.random_seed
         )
         
     except Exception as e:

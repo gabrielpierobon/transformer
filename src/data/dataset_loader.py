@@ -104,6 +104,7 @@ class DatasetLoader:
         start_series: Optional[int] = None, 
         end_series: Optional[int] = None,
         sample_size: Optional[int] = None,
+        random_seed: int = 42,
         verbose: bool = True
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -113,6 +114,7 @@ class DatasetLoader:
             start_series: Optional starting index for series (e.g., 1 for M1)
             end_series: Optional ending index for series (e.g., 50 for M50)
             sample_size: Optional number of series to randomly sample from the range
+            random_seed: Random seed for reproducible sampling
             verbose: Whether to print progress messages
             
         Returns:
@@ -140,11 +142,11 @@ class DatasetLoader:
             # If sample_size is provided, randomly sample from the series
             if sample_size is not None and sample_size < len(series_ids):
                 # Set seed for reproducibility
-                random.seed(42)
+                random.seed(random_seed)
                 sampled_indices = random.sample(range(len(series_ids)), sample_size)
                 series_ids = [series_ids[i] for i in sampled_indices]
                 if verbose:
-                    print(f"Randomly sampled {sample_size} series from range M{start_series} through M{end_series}")
+                    print(f"Randomly sampled {sample_size} series from range M{start_series} through M{end_series} with seed {random_seed}")
                     print(f"First 10 sampled series: {series_ids[:10] if len(series_ids) > 10 else series_ids}")
             
             train_df = train_df[train_df['V1'].isin(series_ids)]
