@@ -45,6 +45,31 @@ def parse_args():
         help='GPU memory limit in MB (default: use the same as in train.py)'
     )
     
+    # Dataset parameters
+    parser.add_argument(
+        '--start-series',
+        type=int,
+        help='Starting series index (e.g., 1 for M1)'
+    )
+    
+    parser.add_argument(
+        '--end-series',
+        type=int,
+        help='Ending series index (e.g., 500 for M500)'
+    )
+    
+    parser.add_argument(
+        '--sample-size',
+        type=int,
+        help='Number of series used in sampling (if the dataset was sampled)'
+    )
+    
+    parser.add_argument(
+        '--random-seed',
+        type=int,
+        help='Random seed used for dataset creation (needed for balanced datasets)'
+    )
+    
     # Allow overriding model type
     parser.add_argument(
         '--probabilistic',
@@ -131,6 +156,19 @@ def main():
     # Add memory limit if provided
     if args.memory_limit is not None:
         cmd.extend(["--memory-limit", str(args.memory_limit)])
+    
+    # Add dataset parameters if provided
+    if args.start_series is not None:
+        cmd.extend(["--start-series", str(args.start_series)])
+    
+    if args.end_series is not None:
+        cmd.extend(["--end-series", str(args.end_series)])
+    
+    if args.sample_size is not None:
+        cmd.extend(["--sample-size", str(args.sample_size)])
+    
+    if args.random_seed is not None:
+        cmd.extend(["--random-seed", str(args.random_seed)])
     
     # Add probabilistic flag if provided
     if args.probabilistic:
