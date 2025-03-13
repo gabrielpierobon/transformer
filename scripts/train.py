@@ -36,6 +36,11 @@ def parse_args():
         type=int,
         help='Number of series used in sampling (if the dataset was sampled)'
     )
+    parser.add_argument(
+        '--random-seed',
+        type=int,
+        help='Random seed used for dataset creation (needed for balanced datasets)'
+    )
     
     # Training parameters
     parser.add_argument(
@@ -469,19 +474,70 @@ def main():
     
     # Define data paths
     base_directory = Path('data/processed/')
-    x_train_path = base_directory / f'X_train_{series_range}.npy'
-    x_val_path = base_directory / f'X_val_{series_range}.npy'
-    y_train_path = base_directory / f'y_train_{series_range}.npy'
-    y_val_path = base_directory / f'y_val_{series_range}.npy'
+    
+    # Check for balanced dataset format first
+    balanced_suffix = f"balanced_sampled{args.sample_size}_seed{args.random_seed}" if args.sample_size and hasattr(args, 'random_seed') else None
+    
+    # Try different naming patterns in order of preference
+    data_suffixes = []
+    
+    # 1. Try balanced dataset format if sample_size is provided
+    if balanced_suffix:
+        data_suffixes.append(balanced_suffix)
+    
+    # 2. Try series range with sampling
+    if args.sample_size:
+        data_suffixes.append(f"{series_range}")
+    
+    # 3. Try just the balanced part without seed
+    if args.sample_size:
+        data_suffixes.append(f"balanced_sampled{args.sample_size}")
+    
+    # 4. Try just the series range without sampling
+    series_range_no_sample = f"M{args.start_series}_M{args.end_series}"
+    data_suffixes.append(series_range_no_sample)
+    
+    # Try each suffix until we find matching files
+    found_data = False
+    for suffix in data_suffixes:
+        x_train_path = base_directory / f'X_train_{suffix}.npy'
+        x_val_path = base_directory / f'X_val_{suffix}.npy'
+        y_train_path = base_directory / f'y_train_{suffix}.npy'
+        y_val_path = base_directory / f'y_val_{suffix}.npy'
+        
+        if all(p.exists() for p in [x_train_path, x_val_path, y_train_path, y_val_path]):
+            found_data = True
+            print(f"Found dataset with suffix: {suffix}")
+            break
+    
+    # If we still haven't found the data, try a direct file search
+    if not found_data:
+        print("Dataset not found with standard naming patterns. Searching for available datasets...")
+        
+        # List all available datasets
+        x_train_files = list(base_directory.glob('X_train_*.npy'))
+        if x_train_files:
+            print("\nAvailable datasets:")
+            for file in x_train_files:
+                suffix = file.name[8:-4]  # Remove 'X_train_' and '.npy'
+                print(f"  - {suffix}")
+            
+            # Ask user to specify dataset
+            print("\nPlease run the script again with the appropriate dataset parameters.")
+            sys.exit(1)
+        else:
+            print("No datasets found in data/processed/ directory.")
+            print("Please run create_dataset.py or create_balanced_dataset.py first.")
+            sys.exit(1)
     
     # Check if processed data exists
     if not all(p.exists() for p in [x_train_path, x_val_path, y_train_path, y_val_path]):
         print(f"Processed data not found for series range {series_range}.")
-        print("Please run create_dataset.py first with appropriate arguments.")
+        print("Please run create_dataset.py or create_balanced_dataset.py first with appropriate arguments.")
         sys.exit(1)
     
     # Load data in chunks to reduce memory usage
-    print(f"Loading pre-processed data for series {series_range}...")
+    print(f"Loading pre-processed data...")
     
     # Use memory mapping for data loading
     X_train = np.load(x_train_path, mmap_mode='r')

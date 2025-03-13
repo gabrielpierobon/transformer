@@ -13,7 +13,7 @@ validation_split: 0.2  # Percentage of training data to use for validation
 
 # Detrending configuration for training
 detrending:
-  enabled: false  # Whether to detrend series before creating subsamples
+  enabled: true  # Whether to detrend series before creating subsamples
   min_points_stl: 12  # Minimum points required for STL decomposition
   min_points_linear: 5  # Minimum points required for linear regression
   force_linear: false  # Force using linear detrending even if STL is possible 
