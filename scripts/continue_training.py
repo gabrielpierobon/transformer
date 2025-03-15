@@ -9,6 +9,7 @@ import sys
 import argparse
 from pathlib import Path
 import subprocess
+import re
 
 def parse_args():
     """Parse command line arguments."""
@@ -68,6 +69,13 @@ def parse_args():
         '--random-seed',
         type=int,
         help='Random seed used for dataset creation (needed for balanced datasets)'
+    )
+    
+    parser.add_argument(
+        '--dataset-type',
+        type=str,
+        choices=['standard', 'balanced', 'rightmost'],
+        help='Type of dataset to use (standard, balanced, or rightmost)'
     )
     
     # Allow overriding model type
@@ -169,6 +177,36 @@ def main():
     
     if args.random_seed is not None:
         cmd.extend(["--random-seed", str(args.random_seed)])
+    
+    # Add dataset type if provided
+    if args.dataset_type is not None:
+        cmd.extend(["--dataset-type", args.dataset_type])
+        
+        # For standard datasets, try to extract series info from model name if not provided
+        if args.dataset_type == 'standard' and (args.start_series is None or args.end_series is None or args.sample_size is None):
+            # Extract model name from path
+            model_name = model_path.name if model_path.exists() else model_path.name
+            
+            # Extract series range using regular expression
+            # Pattern: M\d+_M\d+(_sampled\d+)?
+            series_range_match = re.search(r'M(\d+)_M(\d+)(?:_sampled(\d+))?', model_name)
+            if series_range_match:
+                start_series, end_series, sample_size = series_range_match.groups()
+                
+                # Add start_series if not provided
+                if args.start_series is None:
+                    cmd.extend(["--start-series", start_series])
+                    print(f"Extracted start_series from model name: {start_series}")
+                
+                # Add end_series if not provided
+                if args.end_series is None:
+                    cmd.extend(["--end-series", end_series])
+                    print(f"Extracted end_series from model name: {end_series}")
+                
+                # Add sample_size if not provided and it exists in the model name
+                if args.sample_size is None and sample_size is not None:
+                    cmd.extend(["--sample-size", sample_size])
+                    print(f"Extracted sample_size from model name: {sample_size}")
     
     # Add probabilistic flag if provided
     if args.probabilistic:

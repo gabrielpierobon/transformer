@@ -41,6 +41,12 @@ def parse_args():
         type=int,
         help='Random seed used for dataset creation (needed for balanced datasets)'
     )
+    parser.add_argument(
+        '--dataset-type',
+        type=str,
+        choices=['standard', 'balanced', 'rightmost'],
+        help='Type of dataset to use (standard, balanced, or rightmost)'
+    )
     
     # Training parameters
     parser.add_argument(
@@ -478,24 +484,57 @@ def main():
     # Check for balanced dataset format first
     balanced_suffix = f"balanced_sampled{args.sample_size}_seed{args.random_seed}" if args.sample_size and hasattr(args, 'random_seed') else None
     
+    # Check for right-most dataset format
+    rightmost_suffix = f"rightmost_sampled{args.sample_size}_seed{args.random_seed}" if args.sample_size and hasattr(args, 'random_seed') else None
+    
     # Try different naming patterns in order of preference
     data_suffixes = []
     
-    # 1. Try balanced dataset format if sample_size is provided
-    if balanced_suffix:
-        data_suffixes.append(balanced_suffix)
+    # If dataset type is specified, prioritize that format
+    if hasattr(args, 'dataset_type') and args.dataset_type:
+        if args.dataset_type == 'balanced' and balanced_suffix:
+            data_suffixes.append(balanced_suffix)
+        elif args.dataset_type == 'rightmost' and rightmost_suffix:
+            data_suffixes.append(rightmost_suffix)
+        elif args.dataset_type == 'standard':
+            # For standard datasets, try the exact series range first
+            if args.sample_size:
+                data_suffixes.append(f"{series_range}")
+            
+            # Then try with the command-line specified parameters
+            if args.start_series and args.end_series and args.sample_size:
+                cmd_series_range = f"M{args.start_series}_M{args.end_series}_sampled{args.sample_size}"
+                if cmd_series_range != series_range:
+                    data_suffixes.append(cmd_series_range)
+            
+            # Also try without sampling if specified
+            if args.start_series and args.end_series:
+                data_suffixes.append(f"M{args.start_series}_M{args.end_series}")
+    else:
+        # 1. Try balanced dataset format if sample_size is provided
+        if balanced_suffix:
+            data_suffixes.append(balanced_suffix)
+        
+        # 2. Try right-most dataset format if sample_size is provided
+        if rightmost_suffix:
+            data_suffixes.append(rightmost_suffix)
+        
+        # 3. Try series range with sampling
+        if args.sample_size:
+            data_suffixes.append(f"{series_range}")
+        
+        # 4. Try just the balanced part without seed
+        if args.sample_size:
+            data_suffixes.append(f"balanced_sampled{args.sample_size}")
+        
+        # 5. Try just the right-most part without seed
+        if args.sample_size:
+            data_suffixes.append(f"rightmost_sampled{args.sample_size}")
     
-    # 2. Try series range with sampling
-    if args.sample_size:
-        data_suffixes.append(f"{series_range}")
-    
-    # 3. Try just the balanced part without seed
-    if args.sample_size:
-        data_suffixes.append(f"balanced_sampled{args.sample_size}")
-    
-    # 4. Try just the series range without sampling
+    # Always try the series range without sampling as a fallback
     series_range_no_sample = f"M{args.start_series}_M{args.end_series}"
-    data_suffixes.append(series_range_no_sample)
+    if series_range_no_sample not in data_suffixes:
+        data_suffixes.append(series_range_no_sample)
     
     # Try each suffix until we find matching files
     found_data = False
@@ -509,6 +548,33 @@ def main():
             found_data = True
             print(f"Found dataset with suffix: {suffix}")
             break
+    
+    # If we still haven't found the data and dataset_type is 'standard', try all available standard datasets
+    if not found_data and hasattr(args, 'dataset_type') and args.dataset_type == 'standard':
+        print("Searching for available standard datasets...")
+        
+        # List all available datasets
+        x_train_files = list(base_directory.glob('X_train_M*.npy'))
+        if x_train_files:
+            # Sort by sample size (largest first) to prioritize larger datasets
+            x_train_files.sort(key=lambda x: x.name, reverse=True)
+            
+            for file in x_train_files:
+                suffix = file.name[8:-4]  # Remove 'X_train_' and '.npy'
+                
+                # Skip balanced and rightmost datasets
+                if 'balanced_' in suffix or 'rightmost_' in suffix:
+                    continue
+                
+                x_val_path = base_directory / f'X_val_{suffix}.npy'
+                y_train_path = base_directory / f'y_train_{suffix}.npy'
+                y_val_path = base_directory / f'y_val_{suffix}.npy'
+                
+                if all(p.exists() for p in [file, x_val_path, y_train_path, y_val_path]):
+                    x_train_path = file
+                    found_data = True
+                    print(f"Found standard dataset with suffix: {suffix}")
+                    break
     
     # If we still haven't found the data, try a direct file search
     if not found_data:
@@ -527,7 +593,7 @@ def main():
             sys.exit(1)
         else:
             print("No datasets found in data/processed/ directory.")
-            print("Please run create_dataset.py or create_balanced_dataset.py first.")
+            print("Please run create_dataset.py, create_balanced_dataset.py, or create_rightmost_dataset.py first.")
             sys.exit(1)
     
     # Check if processed data exists
