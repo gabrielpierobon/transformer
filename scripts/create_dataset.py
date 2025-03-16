@@ -7,6 +7,8 @@ import logging
 import argparse
 import yaml
 import numpy as np
+import traceback
+import gc
 from typing import Dict, Any
 
 # Add the project root directory to the Python path
@@ -77,84 +79,90 @@ def create_dataset(config: DataConfig, start_series: int = None, end_series: int
         if sample_size is not None:
             series_suffix += f"_sampled{sample_size}"
         
-        # Save processed data
+        # Log memory usage before saving
+        logger.info(f"Memory usage before saving - X_train: {X_train.nbytes / (1024**2):.2f} MB, y_train: {y_train.nbytes / (1024**2):.2f} MB")
+        logger.info(f"Memory usage before saving - X_val: {X_val.nbytes / (1024**2):.2f} MB, y_val: {y_val.nbytes / (1024**2):.2f} MB")
+        logger.info(f"Total memory usage: {(X_train.nbytes + y_train.nbytes + X_val.nbytes + y_val.nbytes) / (1024**2):.2f} MB")
+        
+        # Save processed data with detailed error handling
         logger.info(f"Saving processed data to {output_dir}")
-        np.save(output_dir / f"X_train{series_suffix}.npy", X_train)
-        np.save(output_dir / f"y_train{series_suffix}.npy", y_train)
-        np.save(output_dir / f"X_val{series_suffix}.npy", X_val)
-        np.save(output_dir / f"y_val{series_suffix}.npy", y_val)
+        
+        try:
+            logger.info(f"Saving X_train{series_suffix}.npy (shape: {X_train.shape})...")
+            np.save(output_dir / f"X_train{series_suffix}.npy", X_train)
+            logger.info(f"Successfully saved X_train{series_suffix}.npy")
+            
+            # Force garbage collection after each save
+            del X_train
+            gc.collect()
+            
+            logger.info(f"Saving y_train{series_suffix}.npy (shape: {y_train.shape})...")
+            np.save(output_dir / f"y_train{series_suffix}.npy", y_train)
+            logger.info(f"Successfully saved y_train{series_suffix}.npy")
+            
+            del y_train
+            gc.collect()
+            
+            logger.info(f"Saving X_val{series_suffix}.npy (shape: {X_val.shape})...")
+            np.save(output_dir / f"X_val{series_suffix}.npy", X_val)
+            logger.info(f"Successfully saved X_val{series_suffix}.npy")
+            
+            del X_val
+            gc.collect()
+            
+            logger.info(f"Saving y_val{series_suffix}.npy (shape: {y_val.shape})...")
+            np.save(output_dir / f"y_val{series_suffix}.npy", y_val)
+            logger.info(f"Successfully saved y_val{series_suffix}.npy")
+            
+            del y_val
+            gc.collect()
+            
+        except Exception as save_error:
+            logger.error(f"Error during save operation: {str(save_error)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
 
         logger.info("Dataset creation completed successfully!")
 
     except Exception as e:
         logger.error(f"Error creating dataset: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Create processed dataset from raw data')
-    parser.add_argument(
-        '--config',
-        type=str,
-        default=str(ROOT_DIR / 'config' / 'data_config.yaml'),
-        help='Path to configuration file'
-    )
-    parser.add_argument(
-        '--start-series',
-        type=int,
-        help='Starting series index (e.g., 1 for M1)'
-    )
-    parser.add_argument(
-        '--end-series',
-        type=int,
-        help='Ending series index (e.g., 50 for M50)'
-    )
-    parser.add_argument(
-        '--sample-size',
-        type=int,
-        help='Number of series to randomly sample from the range (optional)'
-    )
-    parser.add_argument(
-        '--random-seed',
-        type=int,
-        required=True,
-        help='Random seed for reproducible sampling (required)'
-    )
+    parser.add_argument('--config', type=str, default='config/data_config.yaml',
+                        help='Path to data configuration file')
+    parser.add_argument('--start-series', type=int,
+                        help='Starting index for series (e.g., 1 for M1)')
+    parser.add_argument('--end-series', type=int,
+                        help='Ending index for series (e.g., 50 for M50)')
+    parser.add_argument('--sample-size', type=int,
+                        help='Number of series to randomly sample')
+    parser.add_argument('--random-seed', type=int, required=True,
+                        help='Random seed for reproducible sampling')
     return parser.parse_args()
 
 def main():
-    """Main function."""
-    try:
-        # Parse command line arguments
-        args = parse_args()
-        
-        # Load configuration
-        logger.info(f"Loading configuration from {args.config}")
-        config = load_config(args.config)
-        
-        # Log detrending configuration
-        if config.detrend_data:
-            logger.info(
-                "Detrending enabled with configuration: "
-                f"min_points_stl={config.min_points_stl}, "
-                f"min_points_linear={config.min_points_linear}, "
-                f"force_linear={config.force_linear_detrend}"
-            )
-        else:
-            logger.info("Detrending disabled - using original series")
-        
-        # Create dataset
-        create_dataset(
-            config,
-            start_series=args.start_series,
-            end_series=args.end_series,
-            sample_size=args.sample_size,
-            random_seed=args.random_seed
-        )
-        
-    except Exception as e:
-        logger.error(f"Error in main: {str(e)}")
-        sys.exit(1)
+    """Main entry point."""
+    args = parse_args()
+    
+    # Load configuration
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = ROOT_DIR / config_path
+    
+    config = load_config(str(config_path))
+    
+    # Create dataset
+    create_dataset(
+        config=config,
+        start_series=args.start_series,
+        end_series=args.end_series,
+        sample_size=args.sample_size,
+        random_seed=args.random_seed
+    )
 
 if __name__ == '__main__':
     main()

@@ -15,4 +15,9 @@ Write-Host "CUDA_PATH: $env:CUDA_PATH"
 Write-Host "CUDNN_PATH: $env:CUDNN_PATH"
 
 # Unset conflicting CUDA version variables
-Remove-Item Env:CUDA_PATH_V12_5 -ErrorAction SilentlyContinue 
+Remove-Item Env:CUDA_PATH_V12_5 -ErrorAction SilentlyContinue
+
+# Add a pause at the end to keep the terminal window open
+Write-Host ""
+Write-Host "CUDA environment setup completed."
+Read-Host -Prompt "Press Enter to close this window" 
