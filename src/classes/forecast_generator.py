@@ -74,9 +74,14 @@ class ForecastGenerator:
         self.apply_detrending = self.config.get('apply_detrending', True)
         logger.info(f"Detrending during inference is {'enabled' if self.apply_detrending else 'disabled'}")
         
+        # Get positive-only trend removal configuration
+        self.remove_only_positive_trends = self.config.get('remove_only_positive_trends', False)
+        logger.info(f"Positive-only trend removal is {'enabled' if self.remove_only_positive_trends else 'disabled'}")
+        
         self.detrending = SeriesDetrending(
             min_points_stl=min_points_stl,
-            min_points_linear=min_points_linear
+            min_points_linear=min_points_linear,
+            remove_only_positive_trends=self.remove_only_positive_trends
         )
 
     def _load_inference_config(self, config_path: str = None) -> Dict:

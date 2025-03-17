@@ -30,16 +30,18 @@ class SeriesDetrending:
     data characteristics and availability.
     """
 
-    def __init__(self, min_points_stl: int = 12, min_points_linear: int = 5):
+    def __init__(self, min_points_stl: int = 12, min_points_linear: int = 5, remove_only_positive_trends: bool = False):
         """
         Initialize the SeriesDetrending class.
 
         Args:
             min_points_stl: Minimum points required for STL decomposition
             min_points_linear: Minimum points required for linear regression
+            remove_only_positive_trends: If True, only remove positive trends and preserve negative ones
         """
         self.min_points_stl = min_points_stl
         self.min_points_linear = min_points_linear
+        self.remove_only_positive_trends = remove_only_positive_trends
 
     def perform_stl_decomposition(
         self, series: pd.Series, period: int = 12
@@ -93,6 +95,12 @@ class SeriesDetrending:
         """
         x = np.arange(len(series))
         slope, intercept, r_value, _, _ = linregress(x, series)
+        
+        # Check if we should skip negative trend removal
+        if self.remove_only_positive_trends and slope < 0:
+            logger.info(f"Skipping negative linear trend removal (slope: {slope:.4f})")
+            return series, {"type": "none"}
+            
         trend = slope * x + intercept
         detrended = series - trend
         trend_params = {
@@ -118,6 +126,19 @@ class SeriesDetrending:
         if not force_linear and len(series) >= self.min_points_stl:
             decomposition = self.perform_stl_decomposition(series)
             if decomposition:
+                # Check if we should skip negative trend removal
+                if self.remove_only_positive_trends:
+                    # Determine if the trend is negative by checking if the end is lower than the start
+                    # or by calculating the overall slope
+                    trend = decomposition["trend"]
+                    trend_start = trend.iloc[:min(12, len(trend))].mean()
+                    trend_end = trend.iloc[-min(12, len(trend)):].mean()
+                    trend_direction = trend_end - trend_start
+                    
+                    if trend_direction < 0:
+                        logger.info(f"Skipping negative STL trend removal (trend direction: {trend_direction:.4f})")
+                        return series, {"type": "none"}
+                
                 detrended = series - decomposition["trend"]
                 trend_params = {
                     "type": "stl",
@@ -159,7 +180,7 @@ class SeriesDetrending:
                 return series
                 
             # Calculate trend continuation based on last n points
-            n_points = min(12, len(trend_params["trend"]))
+            n_points = min(60, len(trend_params["trend"])) #TODO it was 12 before
             last_trends = trend_params["trend"].iloc[-n_points:]
             trend_diff = last_trends.diff().mean()
             

@@ -44,7 +44,9 @@ ENV/
 Thumbs.db
 
 data/*
+data_docker/*
 models/*
 reports/*
 logs/*
 evaluation/*
+models_docker/*
