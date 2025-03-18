@@ -65,6 +65,32 @@ The training script supports three dataset types:
 
 Use the `--dataset-type` parameter to specify which type of dataset to use.
 
+### Model Architecture Information
+
+During training, detailed information about the model architecture is displayed in the logs:
+- Complete model summary showing all layers
+- Total parameter count
+- Number and percentage of trainable parameters
+- Number and percentage of non-trainable parameters
+
+This information is displayed right after the model is built, between clearly marked separator lines:
+```
+################################################################################
+############################## MODEL ARCHITECTURE SUMMARY ##############################
+################################################################################
+...model layers, shapes, and parameter counts...
+
+################################################################################
+############################## MODEL PARAMETERS SUMMARY ##############################
+################################################################################
+Total parameters: X,XXX,XXX
+Trainable parameters: X,XXX,XXX (100.00%)
+Non-trainable parameters: 0 (0.00%)
+################################################################################
+```
+
+This information helps you understand the complexity of your model and verify that it matches your expectations.
+
 ### Point Model
 
 ```bash

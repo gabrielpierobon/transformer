@@ -634,6 +634,10 @@ def main():
     # Get model with adjusted parameters for DirectML
     print("Building model...")
     print(f"Model configuration: probabilistic={args.probabilistic}, loss_type={args.loss_type}")
+    
+    print("\n>>> CHECKPOINT: About to build and display model <<<")
+    sys.stdout.flush()
+    
     if args.probabilistic:
         if args.loss_type == 'gaussian_nll':
             print("Using default Gaussian NLL loss for probabilistic model")
@@ -677,7 +681,40 @@ def main():
         loss_type=loss_type,
         loss_alpha=args.loss_alpha
     )
-    model.summary()
+    
+    print("\n" + "#"*80)
+    print("#"*30 + " MODEL ARCHITECTURE SUMMARY " + "#"*30)
+    print("#"*80)
+    sys.stdout.flush()
+    
+    # Force summary to be printed to console
+    # First capture to string
+    from io import StringIO
+    temp_stdout = StringIO()
+    model.summary(print_fn=lambda x: temp_stdout.write(x + '\n'))
+    model_summary = temp_stdout.getvalue()
+    
+    # Then print with flush after each line
+    for line in model_summary.split('\n'):
+        print(line)
+        sys.stdout.flush()
+    
+    # Count trainable parameters
+    trainable_count = int(np.sum([tf.keras.backend.count_params(w) for w in model.trainable_weights]))
+    non_trainable_count = int(np.sum([tf.keras.backend.count_params(w) for w in model.non_trainable_weights]))
+    total_count = trainable_count + non_trainable_count
+    
+    print("\n" + "#"*80)
+    print("#"*30 + " MODEL PARAMETERS SUMMARY " + "#"*30)
+    print("#"*80)
+    print(f"Total parameters: {total_count:,}")
+    print(f"Trainable parameters: {trainable_count:,} ({trainable_count/total_count*100:.2f}%)")
+    print(f"Non-trainable parameters: {non_trainable_count:,} ({non_trainable_count/total_count*100:.2f}%)")
+    print("#"*80 + "\n")
+    sys.stdout.flush()
+    
+    print(">>> CHECKPOINT: Finished displaying model architecture and parameters <<<\n")
+    sys.stdout.flush()
     
     # Load model weights if continuing training
     if args.continue_from:
