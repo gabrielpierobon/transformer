@@ -203,4 +203,98 @@ python scripts/evaluate_m4.py --model_name transformer_1.0_directml_point_mse_M1
 
 # Full evaluation
 python scripts/evaluate_m4.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --sample_size 48000
-``` 
+```
+
+## 6. Testing with Air Passengers Dataset
+
+The Air Passengers test script allows you to evaluate your model on a well-known time series dataset and includes backtesting capabilities to compare predictions with actual values.
+
+### Basic Usage
+
+```bash
+# Simple forecast without backtesting
+python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full
+```
+
+### Backtesting
+
+You can evaluate how well your model performs on historical data by using the backtesting feature:
+
+```bash
+# Test with 12 months of backtesting and 24 months of future forecast
+python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --backtest_months 12 --forecast_months 24
+```
+
+The backtesting feature:
+- Uses the last N months (specified by --backtest_months) to compare predictions with actual values
+- Generates M months of future predictions (specified by --forecast_months)
+- Shows detailed metrics comparing predictions with actual values:
+  - MSE (Mean Squared Error)
+  - RMSE (Root Mean Squared Error)
+  - MAE (Mean Absolute Error)
+  - MAPE (Mean Absolute Percentage Error)
+- Displays a comparison table showing:
+  - Actual values
+  - Predicted values
+  - Absolute error
+  - Percentage error
+- Plots both historical data and predictions in a single visualization
+
+This helps you evaluate your model's performance before using it for future predictions.
+
+### Log Transformation
+
+You can apply log transformation to the data before forecasting, which is useful for time series with increasing variance (like the Air Passengers dataset). The log transformation helps stabilize the variance and often improves forecast accuracy for such data.
+
+```bash
+# Apply log transformation with backtesting
+python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --backtest_months 12 --forecast_months 24 --log_transform
+
+# Apply log transformation for simple forecasting
+python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --log_transform
+```
+
+The script automatically applies the inverse transformation to the predictions, so the results are presented in the original scale. The plots and metrics will reflect the data in its original units, making it easy to interpret the results.
+
+## 7. Testing Model Performance on Short Time Series
+
+The short series test script demonstrates how well the model performs with limited historical data by testing it on time series of different lengths.
+
+```bash
+# Basic usage with default parameters
+python scripts/air_passengers_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full
+
+# With log transformation
+python scripts/air_passengers_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --log_transform
+
+# Custom series lengths and forecast horizon
+python scripts/air_passengers_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --short_series_months 3 6 12 24 --forecast_months 36
+```
+
+### Features
+
+The short series test script:
+
+- Tests the model on multiple short time series lengths (default: 3, 6, 9, 12, 18, 24, 48, and 60 months)
+- Predicts the same forecast horizon (default: 24 months) for each series length
+- Automatically pads shorter series with zeros to meet the model's input requirements (default: 60 time steps)
+- Creates a multi-panel visualization comparing predictions across different series lengths
+- Shows metrics (MAPE, RMSE) for any predictions that overlap with actual data
+- Exports a CSV with detailed metrics for each series length
+- Supports log transformation for time series with increasing variance
+
+This script is particularly useful for demonstrating that the transformer model can work effectively even with very short time series, which is traditionally a challenge for many forecasting methods.
+
+### Interpreting the Results
+
+The output visualization shows:
+- Each panel represents a different time series length
+- Blue line: Input data (historical values used for prediction)
+- Gray dots: Zero padding (for series shorter than the model's input length)
+- Green line: Actual future values (for comparison)
+- Red dashed line: Model predictions
+- Vertical dotted line: Boundary between historical and future data
+- Gray vertical line: Boundary between padding and actual historical data (if padding was used)
+- Metrics in the panel title: MAPE and RMSE for the portion where predictions overlap with actual data
+
+The summary metrics table shows how prediction accuracy changes as the input time series length increases, helping you identify the minimum data requirements for achieving acceptable forecast accuracy with your model. 
