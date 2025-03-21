@@ -1,16 +1,22 @@
-# Transformer Time Series Forecasting
+# Slapformer: Transformer for Time Series Forecasting with Limited Historical Data
 
-A deep learning project implementing transformer models for time series forecasting, with support for both point predictions and probabilistic forecasting. The project is designed to work with the M4 competition dataset and includes features for efficient data sampling and GPU acceleration via DirectML.
+A deep learning project implementing Slapformer (Short-history Learning with Augmentation Probabilistic Former), a transformer-based approach for monthly time series forecasting that achieves competitive performance with only five years of historical data or less. This model is designed for real-world forecasting scenarios where extended historical data is often unavailable.
 
-## Features
+## Key Innovations
 
-- 🤖 Transformer-based architecture with multi-head attention
-- 📊 Support for both point predictions and probabilistic forecasting
-- 🎯 Multiple loss functions: MSE, Gaussian NLL, sMAPE, and hybrid loss
-- 🔄 Efficient data sampling for quick experimentation
-- 💻 GPU acceleration with DirectML (supports both NVIDIA and AMD GPUs)
-- 📈 Comprehensive visualization tools
-- 🧪 Validation and testing pipeline
+- 🚀 **Dual Data Augmentation Strategy** that generates both sliding window subsequences and multiple padded versions with varying historical context, multiplying training data to over 20 million examples from just 2,100 time series
+- 🕰️ **Variable-Length Input Processing** enabling effective forecasting with as little as 12 months of historical data
+- 📊 **Competitive Performance** (sMAPE of 13.38) using only 5 years or less of historical data, approaching sophisticated statistical approaches (13.00)
+- 🔄 **Zero-Shot Generalization** to new domains without retraining, with optimal results through domain-specific fine-tuning
+- 💻 **Compact Model Architecture** (1.58M parameters) that can be trained on modest hardware while maintaining strong performance
+
+## Model Architecture
+
+- **Transformer-based Design**: Utilizes self-attention mechanisms to capture complex temporal dependencies
+- **Input Embedding + Positional Encoding**: Preserves temporal information in the time series
+- **Multi-Head Attention (4 heads)**: Allows the model to focus on different aspects of the input sequence
+- **Feed-Forward Network**: Processes normalized attention outputs with a dimension of 2048
+- **Global Average Pooling**: Reduces the sequence dimension by averaging across time steps
 
 ## Project Structure
 
@@ -18,22 +24,22 @@ A deep learning project implementing transformer models for time series forecast
 .
 ├── api/                # API implementation
 ├── config/             # Configuration files
-├── data/              # Data directory
-│   ├── raw/           # Raw M4 competition data
-│   └── processed/     # Processed numpy arrays
-├── docs/              # Documentation
-├── logs/              # Training logs
-├── models/            # Saved models
-│   ├── checkpoints/   # Model checkpoints
-│   └── final/         # Final trained models
-├── reports/           # Generated analysis reports
-│   └── figures/       # Generated graphics
-├── scripts/           # Utility scripts
-├── src/               # Source code
-│   ├── data/          # Data processing modules
-│   ├── models/        # Model implementations
-│   └── visualization/ # Visualization tools
-└── tests/             # Test files
+├── data/               # Data directory
+│   ├── raw/            # Raw M4 competition data
+│   └── processed/      # Processed numpy arrays
+├── docs/               # Documentation
+├── logs/               # Training logs
+├── models/             # Saved models
+│   ├── checkpoints/    # Model checkpoints
+│   └── final/          # Final trained models
+├── reports/            # Generated analysis reports
+│   └── figures/        # Generated graphics
+├── scripts/            # Utility scripts
+└── src/                # Source code
+    ├── data/           # Data processing modules
+    ├── models/         # Model implementations
+    ├── classes/        # Model wrapper classes
+    └── visualization/  # Visualization tools
 ```
 
 ## Installation
@@ -67,114 +73,123 @@ python scripts/verify_gpu.py
 
 ### 2. Create Dataset
 
-For quick experimentation with 1000 series:
+Three dataset types are supported with different augmentation strategies:
 ```bash
-python scripts/create_dataset.py --start-series 1 --end-series 48000 --sample-size 1000
-```
+# Standard dataset with subsequence sampling
+python scripts/create_dataset.py --start-series 1 --end-series 48000 --sample-size 1000 --random-seed 42
 
-For full dataset:
-```bash
-python scripts/create_dataset.py --start-series 1 --end-series 48000
+# Balanced dataset with equal representation across series types
+python scripts/create_balanced_dataset.py --random-seed 42
+
+# Rightmost dataset focusing on the most recent parts of series
+python scripts/create_rightmost_dataset.py --random-seed 42
 ```
 
 ### 3. Train Models
 
-Train a point prediction model:
 ```bash
-python scripts/train.py --start-series 1 --end-series 48000 --sample-size 1000
+# Train a point prediction model
+python scripts/train.py --start-series 1 --end-series 48000 --sample-size 1000 --dataset-type standard
+
+# Train a probabilistic model with uncertainty quantification
+python scripts/train.py --start-series 1 --end-series 48000 --sample-size 1000 --probabilistic --loss-type gaussian_nll --dataset-type standard
 ```
 
-Train a probabilistic model:
-```bash
-python scripts/train.py --start-series 1 --end-series 48000 --sample-size 1000 --probabilistic --loss-type gaussian_nll
-```
+## Forecasting Capabilities
 
-## Model Types
-
-### Point Prediction Model
+### Point Prediction
 
 - Outputs single value predictions
-- Uses MSE loss by default
-- Metrics include MAE
+- Uses MSE or sMAPE loss functions
 - Best for applications requiring exact value forecasts
+- Demonstrated sMAPE of 13.38 across 5,100 diverse time series
 
-### Probabilistic Model
+### Probabilistic Forecasting
 
-- Outputs both mean and uncertainty estimates
-- Three loss function options:
-  1. `gaussian_nll`: Gaussian Negative Log Likelihood
-  2. `smape`: Symmetric Mean Absolute Percentage Error
-  3. `hybrid`: Combination of sMAPE and Gaussian NLL
-- Best for applications requiring uncertainty quantification
+- Outputs both mean and variance (uncertainty) estimates
+- Loss function options:
+  - `gaussian_nll`: Gaussian Negative Log Likelihood
+  - `smape`: Symmetric Mean Absolute Percentage Error
+  - `hybrid`: Combination of sMAPE and Gaussian NLL
+- Provides confidence intervals at various levels (e.g., 50%, 80%, 95%)
+- Enables risk assessment and confidence-based decision making
 
-## Training Options
+## Real-World Applications
 
-Key command-line arguments:
+### Short History Forecasting
+The model can generate reasonable forecasts with as little as 12 months of historical data, making it ideal for:
+- New products or services with limited history
+- Businesses with recent system changes affecting data relevance
+- Applications where data collection has only recently begun
 
-```bash
---start-series INT     # Starting series index
---end-series INT      # Ending series index
---sample-size INT     # Number of series to sample
---batch-size INT      # Training batch size
---epochs INT          # Number of training epochs
---sequence-length INT # Input sequence length
---probabilistic       # Enable probabilistic predictions
---loss-type STR      # Loss function type
---loss-alpha FLOAT   # Weight for hybrid loss
-```
+### Zero-Shot Prediction
+The model can be applied to previously unseen time series without retraining:
+- Cross-domain forecasting with minimal preprocessing
+- Quick deployment across diverse business units
+- Handling of new product lines with limited historical data
 
-## Resource Requirements
-
-Memory usage scales with sample size:
-- 100 series: ~2GB RAM
-- 1,000 series: ~8GB RAM
-- 10,000 series: ~40GB RAM
-
-Training time (approximate):
-- 100 series: ~1 hour
-- 1,000 series: ~10 hours
-- 10,000 series: ~100 hours
-
-## Best Practices
-
-1. Start with small samples (100-500 series) for initial experiments
-2. Use medium samples (1,000-5,000) for architecture tuning
-3. Use large samples (10,000+) for final validation
-4. Train on full dataset for production deployment
-5. Monitor GPU memory usage during training
-6. Use consistent random seeds for reproducibility
+### Practical Business Uses
+- **Inventory Management**: Setting stock levels based on forecasts and uncertainty
+- **Resource Allocation**: Planning capacity based on expected demand
+- **Financial Planning**: Creating budgets with confidence intervals
+- **Sales Forecasting**: Predicting future sales with quantified uncertainty
 
 ## Evaluation
 
 Models are evaluated using:
-- Validation set (20% of processed sequences)
-- Multiple metrics (MAE, MSE, NLL for probabilistic models)
+- Multiple metrics (sMAPE, MAE, MSE)
 - Visualization of predictions and uncertainty
+- Comparison against benchmark models
 
-Run evaluation:
+Run evaluation on the M4 dataset:
 ```bash
-python scripts/test_predictions.py --start-series 1 --end-series 48000 --sample-size 1000 --n-steps 36
+python scripts/evaluate_m4.py --model_name your_model_name --sample_size 1000
 ```
+
+Test on the classic Air Passengers dataset:
+```bash
+python scripts/air_passengers_test.py --model_name your_model_name
+```
+
+For probabilistic forecasting with uncertainty:
+```bash
+python scripts/air_passengers_proba_forecast.py --model_name your_model_name --forecast_months 24 --confidence_levels 50 80 95
+```
+
+## Resource Requirements
+
+Memory usage scales with sample size, but models can be trained on modest hardware:
+- 100 series: ~2GB RAM
+- 1,000 series: ~8GB RAM
+- 10,000 series: ~40GB RAM
+
+The compact architecture (1.58M parameters) enables training on consumer-grade GPUs, including:
+- NVIDIA GeForce RTX 3050 (4GB VRAM)
+- AMD Radeon Graphics GPUs via DirectML
 
 ## Documentation
 
 For detailed information about specific features:
 
-- [Quick Training Guide](docs/QUICK_TRAINING_GUIDE.md)
-- [Sampling Large Datasets](docs/sampling_large_datasets.md)
-- [M4 Evaluation Guide](docs/m4_evaluation_guide.md)
-- [Continue Training Guide](docs/continue_training_guide.md)
-- [Example Runs](docs/example_runs.md)
-- [Model Format Guide](docs/model_format_guide.md)
-- [Training Performance Optimization](docs/training_performance.md)
+- [Quick Commands Guide](docs/QUICK_COMMANDS_GUIDE.md): Comprehensive reference of all command-line options for scripts with practical examples.
+- [Sampling Large Datasets](docs/sampling_large_datasets.md): Strategies for efficiently working with large time series datasets through sampling techniques.
+- [M4 Evaluation Guide](docs/m4_evaluation_guide.md): Step-by-step instructions for evaluating model performance on the M4 competition dataset.
+- [Continue Training Guide](docs/continue_training_guide.md): Methods for resuming or extending training of existing models with new data or parameters.
+- [Example Runs](docs/example_runs.md): Curated examples showcasing the model's performance on various time series with visualizations.
+- [Model Format Guide](docs/model_format_guide.md): Explanation of model storage formats and conversion utilities for deployment.
+- [Training Performance Optimization](docs/training_performance.md): Techniques to optimize training speed and memory usage on different hardware.
 
-## Contributing
+## Paper Reference
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+Please cite the following paper if you use this code:
+
+```
+@article{pierobon2023slapformer,
+  title={Slapformer: A Transformer for Monthly Time Series Forecasting with Limited Historical Data},
+  author={Pierobon, Gabriel},
+  year={2023}
+}
+```
 
 ## License
 
