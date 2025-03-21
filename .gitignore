@@ -43,10 +43,12 @@ ENV/
 .DS_Store
 Thumbs.db
 
-data/*
+data/processed/*
 data_docker/*
-models/*
+models/checkpoint*
+models/final
 reports/*
 logs/*
-evaluation/*
+evaluation/_priors*
+evaluation/plots*
 models_docker/*
