@@ -51,4 +51,5 @@ reports/*
 logs/*
 evaluation/_priors*
 evaluation/plots*
+evaluation/full_set
 models_docker/*
