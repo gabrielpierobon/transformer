@@ -256,24 +256,32 @@ python scripts/air_passengers_test.py --model_name transformer_1.0_directml_poin
 
 The script automatically applies the inverse transformation to the predictions, so the results are presented in the original scale. The plots and metrics will reflect the data in its original units, making it easy to interpret the results.
 
-## 7. Testing Model Performance on Short Time Series
+## 7. Testing with Probabilistic Forecasts
 
-The short series test script demonstrates how well the model performs with limited historical data by testing it on time series of different lengths.
+The probabilistic forecast script allows you to generate forecasts with confidence intervals using a probabilistic model, providing a range of possible future values rather than just a point forecast.
 
 ```bash
-# Basic usage with default parameters
-python scripts/air_passengers_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full
+# Generate probabilistic forecasts with multiple confidence intervals
+python scripts/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --forecast_months 24 --confidence_levels 50 80 95 --log_transform --num_samples 1000
 
-# With log transformation
-python scripts/air_passengers_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --log_transform
+# Test with limited history
+python scripts/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --history_length 24 --log_transform
 
-# Custom series lengths and forecast horizon
-python scripts/air_passengers_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --short_series_months 3 6 12 24 --forecast_months 36
+# Customize confidence levels
+python scripts/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --confidence_levels 50 90 99
 ```
 
-### Features
+The probabilistic forecast script:
+- Generates forecasts with multiple confidence intervals (default: 50%, 80%, 95%)
+- Visualizes the forecast with shaded confidence intervals
+- Creates a detailed forecast table with point predictions and confidence bounds
+- Supports log transformation for data with increasing variance
+- Allows testing with limited historical data
+- Exports predictions to CSV for further analysis
 
-The short series test script:
+This script is particularly useful for understanding the uncertainty in your forecasts and for making risk-informed decisions based on the range of possible future outcomes.
+
+## 8. Testing Model Performance on Short Time Series
 
 - Tests the model on multiple short time series lengths (default: 3, 6, 9, 12, 18, 24, 48, and 60 months)
 - Predicts the same forecast horizon (default: 24 months) for each series length
