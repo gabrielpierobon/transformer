@@ -11,7 +11,7 @@ import re  # Add regular expressions
 # Add the src directory to the path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.models.transformer import get_model
+from src.models.transformer import get_model, gaussian_nll, smape_loss, hybrid_loss
 from src.visualization.plot_utils import plot_random_subsequences
 
 def parse_args():
@@ -665,7 +665,7 @@ def main():
         loss_type = 'hybrid'
         # Use custom hybrid loss with alpha parameter
         alpha = args.loss_alpha if args.loss_alpha is not None else 0.5
-        loss = lambda y_true, y_pred: hybrid_loss(y_true, y_pred, alpha)
+        loss = hybrid_loss(alpha=alpha)
     else:
         # Default to smape for point models, gaussian_nll for probabilistic
         if args.probabilistic:
