@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 # Add project root to Python path
-project_root = str(Path(__file__).resolve().parents[1])
+project_root = str(Path(__file__).resolve().parents[2])
 if project_root not in sys.path:
     sys.path.append(project_root)
 

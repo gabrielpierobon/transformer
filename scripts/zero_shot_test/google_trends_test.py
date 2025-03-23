@@ -1,16 +1,16 @@
 """
-Script to test the transformer model with Air Passengers dataset.
+Script to test the transformer model with Google Trends 'iPhone' data.
 
 This script demonstrates how to:
-1. Load and prepare the Air Passengers dataset
+1. Load and prepare Google Trends data
 2. Initialize and use the transformer model
 3. Generate and visualize forecasts
 4. Compare predictions with actual values (backtesting)
 
 Usage:
-    python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_M1_M48000_sampled1000
-    python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_M1_M48000_sampled1000 --backtest_months 12 --forecast_months 24
-    python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_M1_M48000_sampled1000 --log_transform
+    python scripts/google_trends_test.py --model_name your_model_name
+    python scripts/google_trends_test.py --model_name your_model_name --backtest_months 12 --forecast_months 24
+    python scripts/google_trends_test.py --model_name your_model_name --log_transform
 """
 
 import argparse
@@ -18,15 +18,16 @@ import logging
 import os
 import sys
 from pathlib import Path
+import io
 
 # Add project root to Python path
-project_root = str(Path(__file__).resolve().parents[1])
+project_root = str(Path(__file__).resolve().parents[2])
 if project_root not in sys.path:
     sys.path.append(project_root)
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import matplotlib.pyplot as plt
 
 from src.classes import TransformerModel
@@ -87,7 +88,7 @@ def prepare_data_for_backtesting(df: pd.DataFrame, backtest_months: int, forecas
     
     # Create future data frame with NaN values
     future_data = pd.DataFrame({
-        'unique_id': ['series_1'] * len(future_dates),
+        'unique_id': ['iphone_trends'] * len(future_dates),
         'y': [np.nan] * len(future_dates)
     }, index=future_dates)
     
@@ -151,7 +152,13 @@ def calculate_metrics(actual: pd.Series, predicted: pd.Series) -> dict:
     mse = np.mean((actual - predicted) ** 2)
     rmse = np.sqrt(mse)
     mae = np.mean(np.abs(actual - predicted))
-    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+    
+    # Calculate MAPE safely (avoiding division by zero)
+    non_zero_mask = actual != 0
+    if non_zero_mask.any():
+        mape = np.mean(np.abs((actual[non_zero_mask] - predicted[non_zero_mask]) / actual[non_zero_mask])) * 100
+    else:
+        mape = np.nan
     
     return {
         'MSE': mse,
@@ -161,13 +168,147 @@ def calculate_metrics(actual: pd.Series, predicted: pd.Series) -> dict:
     }
 
 
+def load_google_trends_data():
+    """
+    Load Google Trends 'iPhone' data from a CSV file or create from the provided data.
+    If the CSV doesn't exist, create it first.
+    
+    Returns:
+        pd.DataFrame: DataFrame with the Google Trends data
+    """
+    # Define the data directory
+    data_dir = Path("data/raw")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Define the file path
+    file_path = data_dir / "google_trends_iphone.csv"
+    
+    # Check if the file exists
+    if not file_path.exists():
+        logger.info("Creating Google Trends iPhone data file")
+        
+        # Hard-coded data from the query
+        data = """Month,google_trends
+2010-01,51
+2010-02,47
+2010-03,46
+2010-04,49
+2010-05,50
+2010-06,74
+2010-07,66
+2010-08,65
+2010-09,71
+2010-10,67
+2010-11,67
+2010-12,73
+2011-01,70
+2011-02,68
+2011-03,64
+2011-04,62
+2011-05,63
+2011-06,62
+2011-07,62
+2011-08,64
+2011-09,70
+2011-10,94
+2011-11,72
+2011-12,78
+2012-01,74
+2012-02,67
+2012-03,66
+2012-04,62
+2012-05,58
+2012-06,60
+2012-07,63
+2012-08,63
+2012-09,100
+2012-10,69
+2012-11,66
+2012-12,72
+2013-01,66
+2013-02,65
+2013-03,63
+2013-04,58
+2013-05,58
+2013-06,59
+2013-07,58
+2013-08,58
+2013-09,79
+2013-10,63
+2013-11,60
+2013-12,66
+2014-01,61
+2014-02,59
+2014-03,56
+2014-04,52
+2014-05,52
+2014-06,51
+2014-07,55
+2014-08,56
+2014-09,88
+2014-10,68
+2014-11,61
+2014-12,62
+2015-01,61
+2015-02,54
+2015-03,55
+2015-04,55
+2015-05,52
+2015-06,53
+2015-07,58
+2015-08,59
+2015-09,69
+2015-10,65
+2015-11,59
+2015-12,62
+2016-01,59
+2016-02,55
+2016-03,63
+2016-04,55
+2016-05,52
+2016-06,54
+2016-07,55
+2016-08,57
+2016-09,74
+2016-10,61
+2016-11,55
+2016-12,57
+2017-01,53
+2017-02,50
+2017-03,48
+2017-04,48
+2017-05,46
+2017-06,46
+2017-07,49
+2017-08,47
+2017-09,68
+2017-10,55
+2017-11,61
+2017-12,58"""
+        
+        # Write to file
+        with open(file_path, "w") as f:
+            f.write(data)
+        
+        logger.info(f"Created Google Trends data file at {file_path}")
+    
+    # Load the data
+    logger.info(f"Loading Google Trends data from {file_path}")
+    df = pd.read_csv(file_path)
+    df["ds"] = pd.to_datetime(df["Month"])  # Convert 'Month' to datetime format
+    df["y"] = df["google_trends"]  # Rename 'google_trends' to 'y'
+    df["unique_id"] = "iphone_trends"  # Create a unique id for this time series
+    df.set_index("ds", inplace=True)
+    return df[["unique_id", "y"]]
+
+
 def main():
     """
-    Main function to demonstrate transformer model usage with Air Passengers dataset.
+    Main function to demonstrate transformer model usage with Google Trends data.
     """
     # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description="Test transformer model with Air Passengers dataset"
+        description="Test transformer model with Google Trends iPhone data"
     )
     parser.add_argument(
         "--model_name",
@@ -178,19 +319,19 @@ def main():
     parser.add_argument(
         "--backtest_months",
         type=int,
-        default=0,
+        default=12,
         help="Number of months to use for backtesting (comparing predictions with actuals)"
     )
     parser.add_argument(
         "--forecast_months",
         type=int,
-        default=36,
+        default=12,
         help="Number of months to forecast into the future"
     )
     parser.add_argument(
         "--log_transform",
         action="store_true",
-        help="Apply log transformation to the data before forecasting (to handle increasing variance)"
+        help="Apply log transformation to the data before forecasting"
     )
     args = parser.parse_args()
 
@@ -205,15 +346,8 @@ def main():
     )
 
     # Load and prepare data
-    logger.info("Loading Air Passengers dataset")
-    df = pd.read_csv(
-        "https://raw.githubusercontent.com/Nixtla/transfer-learning-time-series/main/datasets/air_passengers.csv",
-    )
-    df["ds"] = pd.to_datetime(df["timestamp"])  # Convert 'timestamp' to datetime format
-    df["y"] = df["value"]  # Rename 'value' to 'y'
-    df["unique_id"] = "series_1"  # Create a unique id for this time series
-    df.set_index("ds", inplace=True)
-    series_df = df[["unique_id", "y"]]
+    logger.info("Loading Google Trends iPhone data")
+    series_df = load_google_trends_data()
     
     # Store original data for later comparison
     original_series_df = series_df.copy()
@@ -382,6 +516,15 @@ def main():
         # Plot future predictions
         plt.plot(future_predictions['ds'], future_predictions['q_0.5'], 'r-', label='Future Predictions')
         
+        # Add shaded area for probabilistic predictions if available
+        if is_probabilistic and 'q_0.25' in future_predictions.columns and 'q_0.75' in future_predictions.columns:
+            plt.fill_between(
+                future_predictions['ds'], 
+                future_predictions['q_0.25'], 
+                future_predictions['q_0.75'],
+                color='r', alpha=0.2, label='50% Confidence Interval'
+            )
+        
         # Add vertical line to mark split between historical and forecast
         split_date = original_series_df.index[-(args.backtest_months + 1)]
         plt.axvline(x=split_date, color='k', linestyle='--', alpha=0.7)
@@ -390,12 +533,12 @@ def main():
         plt.axvline(x=last_historical_date, color='k', linestyle=':', alpha=0.7)
         
         # Add labels
-        title = 'Time Series Forecast with Backtesting'
+        title = 'Google Trends "iPhone" Search Volume Forecast with Backtesting'
         if args.log_transform:
             title += ' (Log Transformed)'
         plt.title(title)
         plt.xlabel('Date')
-        plt.ylabel('Passengers')
+        plt.ylabel('Search Volume Index')
         plt.grid(True)
         plt.legend()
         
@@ -403,7 +546,7 @@ def main():
         figures_dir = Path('reports/figures')
         figures_dir.mkdir(parents=True, exist_ok=True)
         transform_suffix = '_log' if args.log_transform else ''
-        plt.savefig(figures_dir / f'forecast_with_backtest_{args.model_name}{transform_suffix}.png')
+        plt.savefig(figures_dir / f'google_trends_iphone_forecast_{args.model_name}{transform_suffix}.png')
         
         # Show plot
         plt.tight_layout()
@@ -427,26 +570,41 @@ def main():
             predictions['ds'] = pd.to_datetime(predictions['ds'])
             plt.plot(predictions['ds'], predictions['q_0.5'], 'r-', label='Predictions')
             
+            # Add shaded area for probabilistic predictions if available
+            if is_probabilistic and 'q_0.25' in predictions.columns and 'q_0.75' in predictions.columns:
+                plt.fill_between(
+                    predictions['ds'], 
+                    predictions['q_0.25'], 
+                    predictions['q_0.75'],
+                    color='r', alpha=0.2, label='50% Confidence Interval'
+                )
+            
             # Add vertical line to mark end of historical data
             plt.axvline(x=historical_dates[-1], color='k', linestyle=':', alpha=0.7)
             
             # Add labels
-            plt.title('Time Series Forecast (Log Transformed)')
+            plt.title('Google Trends "iPhone" Search Volume Forecast (Log Transformed)')
             plt.xlabel('Date')
-            plt.ylabel('Passengers')
+            plt.ylabel('Search Volume Index')
             plt.grid(True)
             plt.legend()
             
             # Save plot
             figures_dir = Path('reports/figures')
             figures_dir.mkdir(parents=True, exist_ok=True)
-            plt.savefig(figures_dir / f'forecast_{args.model_name}_log.png')
+            plt.savefig(figures_dir / f'google_trends_iphone_forecast_{args.model_name}_log.png')
             
             # Show plot
             plt.tight_layout()
             plt.show()
         else:
-            model.plot_forecast(original_series_df, predictions)
+            # Custom plotting for better labeling
+            model.plot_forecast(
+                original_series_df, 
+                predictions, 
+                title='Google Trends "iPhone" Search Volume Forecast',
+                ylabel='Search Volume Index'
+            )
 
 
 if __name__ == "__main__":

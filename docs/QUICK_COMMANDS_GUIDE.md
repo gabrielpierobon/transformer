@@ -199,10 +199,10 @@ Evaluation requires a full model format (after conversion):
 
 ```bash
 # Evaluate on a sample of series
-python scripts/evaluate_m4.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --sample_size 400
+python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --sample_size 400
 
 # Full evaluation
-python scripts/evaluate_m4.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --sample_size 48000
+python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --sample_size 48000
 ```
 
 ## 6. Testing with Air Passengers Dataset
@@ -213,7 +213,7 @@ The Air Passengers test script allows you to evaluate your model on a well-known
 
 ```bash
 # Simple forecast without backtesting
-python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full
+python scripts/zero_shot_test/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full
 ```
 
 ### Backtesting
@@ -222,7 +222,7 @@ You can evaluate how well your model performs on historical data by using the ba
 
 ```bash
 # Test with 12 months of backtesting and 24 months of future forecast
-python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --backtest_months 12 --forecast_months 24
+python scripts/zero_shot_test/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --backtest_months 12 --forecast_months 24
 ```
 
 The backtesting feature:
@@ -248,10 +248,10 @@ You can apply log transformation to the data before forecasting, which is useful
 
 ```bash
 # Apply log transformation with backtesting
-python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --backtest_months 12 --forecast_months 24 --log_transform
+python scripts/zero_shot_test/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --backtest_months 12 --forecast_months 24 --log_transform
 
 # Apply log transformation for simple forecasting
-python scripts/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --log_transform
+python scripts/zero_shot_test/air_passengers_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --log_transform
 ```
 
 The script automatically applies the inverse transformation to the predictions, so the results are presented in the original scale. The plots and metrics will reflect the data in its original units, making it easy to interpret the results.
@@ -262,13 +262,13 @@ The probabilistic forecast script allows you to generate forecasts with confiden
 
 ```bash
 # Generate probabilistic forecasts with multiple confidence intervals
-python scripts/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --forecast_months 24 --confidence_levels 50 80 95 --log_transform --num_samples 1000
+python scripts/probabilistic_capabilities_test/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --forecast_months 24 --confidence_levels 50 80 95 --log_transform --num_samples 1000
 
 # Test with limited history
-python scripts/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --history_length 24 --log_transform
+python scripts/probabilistic_capabilities_test/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --history_length 24 --log_transform
 
 # Customize confidence levels
-python scripts/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --confidence_levels 50 90 99
+python scripts/probabilistic_capabilities_test/air_passengers_proba_forecast.py --model_name transformer_1.0_directml_proba_gaussian_nll_M1_M48000_sampled2103_full --confidence_levels 50 90 99
 ```
 
 The probabilistic forecast script:
@@ -305,4 +305,90 @@ The output visualization shows:
 - Gray vertical line: Boundary between padding and actual historical data (if padding was used)
 - Metrics in the panel title: MAPE and RMSE for the portion where predictions overlap with actual data
 
-The summary metrics table shows how prediction accuracy changes as the input time series length increases, helping you identify the minimum data requirements for achieving acceptable forecast accuracy with your model. 
+The summary metrics table shows how prediction accuracy changes as the input time series length increases, helping you identify the minimum data requirements for achieving acceptable forecast accuracy with your model.
+
+```bash
+# Run short series test with a specific model and range of historical lengths
+python scripts/short_series_test/air_passengers_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled2103_full_4epochs --short_series_months 3 6 9 12 18 24 48 60 --forecast_months 24 
+```
+
+## 9. Testing with Google Trends Data
+
+The Google Trends test scripts allow you to evaluate your model on search trend data, specifically iPhone search volume. This demonstrates the model's performance on real-world search interest data with seasonal patterns.
+
+### Basic Google Trends Forecasting
+
+```bash
+# Simple forecast without backtesting
+python scripts/short_series_test/google_trends_test.py --model_name your_model_name
+
+# Test with 12 months of backtesting and 12 months of future forecast
+python scripts/short_series_test/google_trends_test.py --model_name your_model_name --backtest_months 12 --forecast_months 12
+
+# Apply log transformation (useful if the trend data has increasing variance)
+python scripts/short_series_test/google_trends_test.py --model_name your_model_name --backtest_months 12 --log_transform
+```
+
+The Google Trends test script:
+- Loads iPhone search volume data from Google Trends
+- Supports backtesting to evaluate prediction accuracy on historical data
+- Provides detailed metrics (MSE, RMSE, MAE, MAPE) for backtested predictions
+- Visualizes both historical data and predictions in a single plot
+- Creates a comparison table showing actual vs. predicted values
+- Supports log transformation for data handling
+- Works with both point and probabilistic forecast models
+
+### Testing with Limited Google Trends History
+
+```bash
+# Test model performance with different amounts of historical data
+python scripts/short_series_test/google_trends_short_series_test.py --model_name your_model_name
+
+# Customize the series lengths to test
+python scripts/short_series_test/google_trends_short_series_test.py --model_name your_model_name --short_series_months 3 6 12 24
+
+# Apply log transformation and adjust forecast horizon
+python scripts/short_series_test/google_trends_short_series_test.py --model_name your_model_name --log_transform --forecast_months 24
+
+# Complete example with specific model and extended series lengths
+python scripts/short_series_test/google_trends_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled2103_full_4epochs --short_series_months 3 6 9 12 18 24 48 60 --forecast_months 24
+```
+
+The Google Trends short series script:
+- Tests the model on multiple short time series lengths (default: 3, 6, 9, 12, 18, 24, and 36 months)
+- Creates a multi-panel visualization comparing predictions across different series lengths
+- Handles zero padding for series shorter than the model's input requirement
+- Shows detailed metrics (MAPE, RMSE) for predictions that overlap with actual data
+- Exports the metrics to a CSV file for further analysis
+- Visualizes confidence intervals for probabilistic models
+
+These Google Trends test scripts demonstrate the model's ability to forecast search interest patterns and its effectiveness with limited historical data, which is particularly valuable for new or emerging search trends. 
+
+> **Note**: With the recent reorganization of scripts into subdirectories, the Python path imports in these scripts have been updated to use `Path(__file__).resolve().parents[2]` to correctly find the project root directory when executed from their new locations.
+
+## 10. Script Organization Reference
+
+The scripts have been reorganized into logical subdirectories for better project organization:
+
+1. **Root Scripts** - Core functionality scripts remain in the main scripts directory:
+   - Dataset creation (`create_dataset.py`, `create_balanced_dataset.py`, `create_rightmost_dataset.py`)
+   - Training (`train.py`, `continue_training.py`)
+   - Model utilities (`fix_model_format.py`, `check_model_format.py`, `convert_model_format.py`)
+   - Performance tools (`optimize_training.py`, `verify_gpu.py`)
+
+2. **Evaluation Scripts** - Located in `scripts/evaluate_m4_scripts/`:
+   - `evaluate_m4.py` - Main M4 evaluation script
+   - `evaluate_m4_full.py` - Extended M4 evaluation
+
+3. **Zero-Shot Testing** - Located in `scripts/zero_shot_test/`:
+   - `air_passengers_test.py` - Tests using the Air Passengers dataset
+   - `google_trends_test.py` - Tests using Google Trends data
+
+4. **Short Series Testing** - Located in `scripts/short_series_test/`:
+   - `air_passengers_short_series_test.py` - Tests with limited Air Passengers history
+   - `google_trends_short_series_test.py` - Tests with limited Google Trends history
+
+5. **Probabilistic Capabilities** - Located in `scripts/probabilistic_capabilities_test/`:
+   - `air_passengers_proba_forecast.py` - Probabilistic forecasting with confidence intervals
+
+When running these scripts, be sure to use the correct path for the script location as shown in the examples throughout this guide. 

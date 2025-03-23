@@ -25,12 +25,19 @@ class SeriesDetrending:
     - Linear trend removal
     - Trend strength assessment
     - Trend reapplication
+    - Zero padding detection and handling
     
     The class automatically selects the best detrending method based on
     data characteristics and availability.
     """
 
-    def __init__(self, min_points_stl: int = 12, min_points_linear: int = 5, remove_only_positive_trends: bool = False):
+    def __init__(
+        self, 
+        min_points_stl: int = 12, 
+        min_points_linear: int = 5, 
+        remove_only_positive_trends: bool = False,
+        disable_linear_detrending: bool = False
+    ):
         """
         Initialize the SeriesDetrending class.
 
@@ -38,10 +45,89 @@ class SeriesDetrending:
             min_points_stl: Minimum points required for STL decomposition
             min_points_linear: Minimum points required for linear regression
             remove_only_positive_trends: If True, only remove positive trends and preserve negative ones
+            disable_linear_detrending: If True, linear detrending will be skipped entirely
         """
         self.min_points_stl = min_points_stl
         self.min_points_linear = min_points_linear
         self.remove_only_positive_trends = remove_only_positive_trends
+        self.disable_linear_detrending = disable_linear_detrending
+        
+        if self.disable_linear_detrending:
+            logger.info("Linear detrending is disabled by configuration.")
+
+    def detect_zero_padding(self, series: pd.Series, threshold: float = 1e-6) -> Tuple[pd.Series, Dict]:
+        """
+        Detect and extract zero-padded prefixes from a time series.
+        
+        This is used to handle time series that have been artificially padded
+        with zeros to meet minimum length requirements.
+        
+        Args:
+            series: Input time series
+            threshold: Values below this threshold are considered zero padding
+            
+        Returns:
+            Tuple of (non-padded series, padding info dictionary)
+        """
+        if len(series) == 0:
+            return series, {"padding_length": 0, "has_padding": False}
+            
+        # Find the first non-zero value (considering the threshold)
+        non_zero_indices = np.where(np.abs(series.values) > threshold)[0]
+        
+        if len(non_zero_indices) == 0:
+            # All zeros case
+            logger.warning("Series contains only zeros or near-zero values.")
+            return series, {"padding_length": 0, "has_padding": False}
+            
+        first_non_zero_idx = non_zero_indices[0]
+        
+        if first_non_zero_idx == 0:
+            # No padding detected
+            return series, {"padding_length": 0, "has_padding": False}
+            
+        # Extract the non-padded portion
+        non_padded_series = series.iloc[first_non_zero_idx:].copy()
+        
+        padding_info = {
+            "padding_length": first_non_zero_idx,
+            "has_padding": True,
+            "original_length": len(series),
+            "padding_indices": series.index[:first_non_zero_idx],
+            "non_padding_indices": series.index[first_non_zero_idx:]
+        }
+        
+        logger.info(f"Detected {first_non_zero_idx} zero-padded points at the beginning of the series.")
+        return non_padded_series, padding_info
+
+    def recombine_with_padding(
+        self, 
+        processed_series: pd.Series, 
+        padding_info: Dict
+    ) -> pd.Series:
+        """
+        Recombine a processed series with its original zero padding.
+        
+        Args:
+            processed_series: The processed time series (after detrending, etc.)
+            padding_info: Padding information from detect_zero_padding
+            
+        Returns:
+            Series with padding reapplied
+        """
+        if not padding_info.get("has_padding", False):
+            return processed_series
+            
+        # Create a series for the padding
+        padding = pd.Series(
+            [0] * padding_info["padding_length"],
+            index=padding_info["padding_indices"]
+        )
+        
+        # Combine padding with processed series
+        result = pd.concat([padding, processed_series])
+        
+        return result
 
     def perform_stl_decomposition(
         self, series: pd.Series, period: int = 12
@@ -115,6 +201,9 @@ class SeriesDetrending:
     def remove_trend(self, series: pd.Series, force_linear: bool = False) -> Tuple[pd.Series, Dict]:
         """
         Remove trend from the time series using the best available method.
+        
+        Handles zero-padded series by detecting and removing padding before
+        detrending, then recombining after detrending.
 
         Args:
             series: Input time series
@@ -123,8 +212,21 @@ class SeriesDetrending:
         Returns:
             Tuple of (detrended series, trend parameters)
         """
-        if not force_linear and len(series) >= self.min_points_stl:
-            decomposition = self.perform_stl_decomposition(series)
+        # First, detect and handle any zero padding
+        non_padded_series, padding_info = self.detect_zero_padding(series)
+        
+        # If the series is too short after removing padding, return unchanged
+        if len(non_padded_series) < self.min_points_linear:
+            logger.warning(
+                f"Series too short after removing padding. "
+                f"Non-padded length: {len(non_padded_series)}, "
+                f"Min required: {self.min_points_linear}."
+            )
+            return series, {"type": "none", "padding_info": padding_info}
+            
+        # Perform detrending on the non-padded portion
+        if not force_linear and len(non_padded_series) >= self.min_points_stl:
+            decomposition = self.perform_stl_decomposition(non_padded_series)
             if decomposition:
                 # Check if we should skip negative trend removal
                 if self.remove_only_positive_trends:
@@ -137,22 +239,51 @@ class SeriesDetrending:
                     
                     if trend_direction < 0:
                         logger.info(f"Skipping negative STL trend removal (trend direction: {trend_direction:.4f})")
+                        
+                        # Recombine with padding and return
+                        if padding_info.get("has_padding", False):
+                            return self.recombine_with_padding(non_padded_series, padding_info), {"type": "none", "padding_info": padding_info}
                         return series, {"type": "none"}
                 
-                detrended = series - decomposition["trend"]
+                detrended = non_padded_series - decomposition["trend"]
                 trend_params = {
                     "type": "stl",
                     "trend": decomposition["trend"],
                     "trend_strength": decomposition["trend_strength"],
                     "seasonal_strength": decomposition["seasonal_strength"],
+                    "padding_info": padding_info
                 }
+                
+                # Recombine with padding if needed
+                if padding_info.get("has_padding", False):
+                    detrended = self.recombine_with_padding(detrended, padding_info)
+                
                 return detrended, trend_params
 
-        if len(series) >= self.min_points_linear:
-            return self.remove_linear_trend(series)
+        # Check if linear detrending is disabled
+        if self.disable_linear_detrending:
+            logger.info("Skipping linear detrending as it is disabled in configuration")
+            
+            # Recombine with padding if needed and return original series
+            if padding_info.get("has_padding", False):
+                return self.recombine_with_padding(non_padded_series, padding_info), {"type": "none", "padding_info": padding_info}
+            return series, {"type": "none", "padding_info": padding_info}
+
+        # Fallback to linear detrending if enabled and series is long enough
+        if len(non_padded_series) >= self.min_points_linear:
+            detrended, trend_params = self.remove_linear_trend(non_padded_series)
+            
+            # Add padding info to trend params
+            trend_params["padding_info"] = padding_info
+            
+            # Recombine with padding if needed
+            if padding_info.get("has_padding", False):
+                detrended = self.recombine_with_padding(detrended, padding_info)
+            
+            return detrended, trend_params
         
         logger.warning("Not enough data points for any detrending method. Using original series.")
-        return series, {"type": "none"}
+        return series, {"type": "none", "padding_info": padding_info}
 
     def add_trend(
         self, 
@@ -205,7 +336,12 @@ class SeriesDetrending:
             if "original_index" in trend_params:
                 start_idx = len(trend_params["original_index"])
             else:
-                start_idx = 0
+                # Consider padding offset if present
+                if "padding_info" in trend_params and trend_params["padding_info"].get("has_padding", False):
+                    # We continue from the non-padded portion length, not the full series
+                    start_idx = len(trend_params["padding_info"]["non_padding_indices"])
+                else:
+                    start_idx = 0
                 
             x_values = np.arange(start_idx, start_idx + len(future_index))
             future_trend = pd.Series(
@@ -223,6 +359,9 @@ class SeriesDetrending:
     def get_trend_strength(self, series: pd.Series) -> float:
         """
         Calculate the strength of the trend in the series.
+        
+        Handles zero-padded series by detecting and removing padding
+        before calculating trend strength.
 
         Args:
             series: Input time series
@@ -230,11 +369,19 @@ class SeriesDetrending:
         Returns:
             Float indicating trend strength (0 to 1, higher means stronger trend)
         """
-        if len(series) >= self.min_points_stl:
-            decomposition = self.perform_stl_decomposition(series)
+        # First, detect and handle any zero padding
+        non_padded_series, _ = self.detect_zero_padding(series)
+        
+        if len(non_padded_series) >= self.min_points_stl:
+            decomposition = self.perform_stl_decomposition(non_padded_series)
             if decomposition:
                 return decomposition["trend_strength"]
         
-        # For shorter series, use R-squared from linear regression
-        _, trend_params = self.remove_linear_trend(series)
-        return trend_params["r_squared"] 
+        # For shorter series, use R-squared from linear regression if linear detrending is enabled
+        if not self.disable_linear_detrending:
+            _, trend_params = self.remove_linear_trend(non_padded_series)
+            return trend_params["r_squared"]
+        
+        # If linear detrending is disabled, return a low trend strength value
+        logger.info("Linear detrending disabled; returning minimal trend strength")
+        return 0.0 

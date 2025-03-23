@@ -8,10 +8,15 @@ apply_detrending: true
 # Whether to only remove positive trends
 # If true, negative trends will be preserved (not removed)
 # If false, all trends will be removed regardless of direction
-remove_only_positive_trends: true
+remove_only_positive_trends: false
+
+# Whether to disable linear detrending completely
+# If true, linear detrending will be skipped, even when STL isn't possible
+# If false, linear detrending will be used as a fallback when STL isn't possible
+disable_linear_detrending: true
 
 # Minimum points required for different detrending methods
-min_points_stl: 40 # was 12 before
+min_points_stl: 12 # was 12 before
 min_points_linear: 5
 
 # Confidence interval settings
