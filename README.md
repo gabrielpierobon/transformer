@@ -6,7 +6,7 @@ A deep learning project implementing Slapformer (Short-history Learning with Aug
 
 - 🚀 **Dual Data Augmentation Strategy** that generates both sliding window subsequences and multiple padded versions with varying historical context, multiplying training data to over 20 million examples from just 2,100 time series
 - 🕰️ **Variable-Length Input Processing** enabling effective forecasting with as little as 12 months of historical data
-- 📊 **Competitive Performance** (sMAPE of 13.38) using only 5 years or less of historical data, approaching sophisticated statistical approaches (13.00)
+- 📊 **Competitive Performance** (sMAPE of 13.13) using only 5 years or less of historical data, approaching sophisticated statistical approaches (13.00)
 - 🔄 **Zero-Shot Generalization** to new domains without retraining, with optimal results through domain-specific fine-tuning
 - 💻 **Compact Model Architecture** (1.58M parameters) that can be trained on modest hardware while maintaining strong performance
 
@@ -102,7 +102,7 @@ python scripts/train.py --start-series 1 --end-series 48000 --sample-size 1000 -
 - Outputs single value predictions
 - Uses MSE or sMAPE loss functions
 - Best for applications requiring exact value forecasts
-- Demonstrated sMAPE of 13.38 across 5,100 diverse time series
+- Demonstrated sMAPE of 13.13 across 6,400 diverse time series
 
 ### Probabilistic Forecasting
 
