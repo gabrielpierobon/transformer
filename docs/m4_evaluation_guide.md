@@ -23,6 +23,8 @@ Before running the evaluation, ensure you have:
    - `Monthly-test.csv`
    
    Place these files in the `data/raw/` directory.
+   
+   > The M4 dataset can be downloaded from the [M4 Competition GitHub repository](https://github.com/Mcompetitions/M4-methods/tree/master/Dataset).
 
 2. Trained a transformer model or have a pre-trained model available in the `models/final/` directory.
 

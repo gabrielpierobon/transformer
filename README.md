@@ -143,8 +143,10 @@ Models are evaluated using:
 
 Run evaluation on the M4 dataset:
 ```bash
-python scripts/evaluate_m4.py --model_name your_model_name --sample_size 1000
+python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name your_model_name --sample_size 1000
 ```
+
+> **Note**: The M4 dataset can be downloaded from the [M4 Competition GitHub repository](https://github.com/Mcompetitions/M4-methods/tree/master/Dataset).
 
 Test on the classic Air Passengers dataset:
 ```bash

@@ -51,6 +51,7 @@ reports/*
 logs/*
 evaluation/_priors*
 evaluation/5100_M4_test_series_evaluation_with_plots/
+evaluation/6400_M4_test_series_evaluation_with_plots/
 evaluation/plots*
 evaluation/full_set
 models_docker/*

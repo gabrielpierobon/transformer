@@ -205,6 +205,8 @@ python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name transformer_1.0_d
 python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --sample_size 48000
 ```
 
+> **Note**: The M4 dataset files needed for evaluation can be downloaded from the [M4 Competition GitHub repository](https://github.com/Mcompetitions/M4-methods/tree/master/Dataset). Place the downloaded files in the `data/raw/` directory.
+
 ## 6. Testing with Air Passengers Dataset
 
 The Air Passengers test script allows you to evaluate your model on a well-known time series dataset and includes backtesting capabilities to compare predictions with actual values.
