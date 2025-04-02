@@ -46,6 +46,8 @@ def main():
     parser = argparse.ArgumentParser(description='Run tourism dataset evaluation')
     parser.add_argument('--log-transform', action='store_true',
                         help='Apply log transformation to the data before forecasting')
+    parser.add_argument('--include-naive2', action='store_true',
+                        help='Include Naive2 benchmark (average of last 2 values)')
     args = parser.parse_args()
     
     logger.info("Starting tourism dataset evaluation")
@@ -72,9 +74,15 @@ def main():
     # Run evaluation with all 366 monthly series as per the paper
     logger.info("Running evaluation with all 366 monthly series (as per the paper)")
     
-    # Add log transform parameter if requested
-    log_transform_param = "--log-transform" if args.log_transform else ""
-    eval_cmd = f"python scripts/evaluate_tourism.py --model-name {model_name} --sample-size 366 --forecast-horizon 24 {log_transform_param}"
+    # Add command line parameters
+    cmd_params = []
+    if args.log_transform:
+        cmd_params.append("--log-transform")
+    if args.include_naive2:
+        cmd_params.append("--include-naive2")
+    
+    params_str = " ".join(cmd_params)
+    eval_cmd = f"python scripts/evaluate_tourism.py --model-name {model_name} --sample-size 366 --forecast-horizon 24 {params_str}"
     
     if run_command(eval_cmd) != 0:
         logger.error("Evaluation failed")

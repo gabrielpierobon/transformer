@@ -60,6 +60,25 @@ For series with increasing variance, you can apply log transformation:
 python scripts/evaluate_tourism.py --model-name <MODEL_NAME> --sample-size 366 --forecast-horizon 24 --log-transform
 ```
 
+### Benchmark Comparisons
+
+The evaluation script automatically compares your model's performance against the Seasonal Naive (SNaive) benchmark. To also include a Naive2 benchmark in your comparison:
+
+```bash
+python scripts/evaluate_tourism.py --model-name <MODEL_NAME> --sample-size 366 --forecast-horizon 24 --include-naive2
+```
+
+This will:
+- Calculate Naive2 forecasts for each series (using the average of the last 2 observed values)
+- Include Naive2 metrics in the summary results
+- Show improvement percentages over both SNaive and Naive2
+
+You can combine this with other options:
+
+```bash
+python scripts/evaluate_tourism.py --model-name <MODEL_NAME> --sample-size 366 --forecast-horizon 24 --log-transform --include-naive2
+```
+
 ### Using Batch Files
 
 For convenience, you can use the provided batch file (Windows):
@@ -72,6 +91,11 @@ Or with log transformation:
 
 ```bash
 scripts\run_tourism_evaluation.bat --log-transform
+```
+
+With Naive2 benchmark:
+```bash
+scripts\run_tourism_evaluation.bat --include-naive2
 ```
 
 ### Using Python Script (Linux/macOS)
@@ -88,6 +112,11 @@ Or with log transformation:
 python scripts/run_tourism_evaluation.py --log-transform
 ```
 
+With Naive2 benchmark:
+```bash
+python scripts/run_tourism_evaluation.py --include-naive2
+```
+
 ## Understanding the Results
 
 The evaluation produces several outputs:
@@ -95,6 +124,7 @@ The evaluation produces several outputs:
 1. **Detailed Results**: CSV file with metrics for each series
 2. **Summary Metrics**: Overall performance metrics across all series
 3. **Plots**: Visualization of forecasts for each series in `evaluation/tourism/plots/`
+4. **Benchmark Comparisons**: Comparison of your model against SNaive and Naive2 (if enabled)
 
 The primary metric used in the paper is MAPE (Mean Absolute Percentage Error). Other metrics included are:
 
@@ -142,6 +172,35 @@ python scripts/evaluate_tourism.py --model-name <MODEL_NAME> --sample-size 366 -
 ```
 
 The default is 60 data points.
+
+## Implementing Naive2 Benchmark
+
+The Naive2 benchmark generates forecasts by averaging the last 2 observed values in a time series. This simple method serves as an additional reference point that is slightly more sophisticated than the basic Naive method.
+
+If you need to implement this benchmark yourself, here's a basic implementation:
+
+```python
+def naive2_forecast(series, forecast_horizon):
+    """
+    Generate Naive2 forecasts (average of last 2 observations)
+    
+    Args:
+        series: Array of historical values
+        forecast_horizon: Number of periods to forecast
+        
+    Returns:
+        Array of forecasts
+    """
+    if len(series) < 2:
+        # Fall back to Naive if not enough data
+        return np.repeat(series[-1], forecast_horizon)
+    
+    # Average last 2 observations
+    last_value = np.mean(series[-2:])
+    
+    # Repeat for the forecast horizon
+    return np.repeat(last_value, forecast_horizon)
+```
 
 ## References
 
