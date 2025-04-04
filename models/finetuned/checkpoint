@@ -1,0 +1,2 @@
+model_checkpoint_path: "finetuned_tourism_transformer_1_weights"
+all_model_checkpoint_paths: "finetuned_tourism_transformer_1_weights"

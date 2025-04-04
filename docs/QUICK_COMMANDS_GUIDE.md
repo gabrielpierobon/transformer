@@ -193,7 +193,125 @@ python scripts/create_rightmost_dataset.py --random-seed 42
 python scripts/continue_training.py models/final/transformer_1.0_directml_point_M1_M48000_sampled1000 --epochs 10 --loss-type mse --sample-size 19177600 --random-seed 42 --dataset-type rightmost
 ```
 
-## 5. Evaluating on the M4 Test Set
+## 5. Finetuning on New Domains
+
+The finetuning process allows you to adapt a pre-trained M4 model to new domains while preserving learned patterns. This is particularly useful when you have limited data in your target domain.
+
+### Tourism Dataset Preparation
+
+Before finetuning, prepare your tourism dataset:
+
+```bash
+# Convert tourism data from TSF to CSV format
+python scripts/convert_tourism_tsf_to_csv.py
+
+# Create processed tourism dataset with proper scaling and augmentation
+python scripts/create_tourism_dataset.py
+```
+
+### Finetuning Examples
+
+1. **Basic Finetuning** (Recommended Starting Point)
+```bash
+python scripts/finetune.py \
+    --pretrained-model models/final/transformer_1.0_directml_point_mse_M1_M48000_sampled2101_full_4epoch \
+    --dataset-suffix _tourism \
+    --epochs 20 \
+    --batch-size 128 \
+    --freeze-layers attention \
+    --learning-rate 1e-4 \
+    --loss-type mse
+```
+
+2. **Conservative Finetuning** (Very Limited Data)
+```bash
+python scripts/finetune.py \
+    --pretrained-model models/final/your_m4_model \
+    --dataset-suffix _tourism \
+    --epochs 10 \
+    --batch-size 64 \
+    --freeze-layers all_but_final \
+    --learning-rate 5e-5 \
+    --loss-type mse
+```
+
+3. **Aggressive Finetuning** (Large Dataset)
+```bash
+python scripts/finetune.py \
+    --pretrained-model models/final/your_m4_model \
+    --dataset-suffix _tourism \
+    --epochs 30 \
+    --batch-size 256 \
+    --freeze-layers none \
+    --learning-rate 5e-4 \
+    --loss-type mse
+```
+
+4. **Memory-Optimized Finetuning**
+```bash
+python scripts/finetune.py \
+    --pretrained-model models/final/your_m4_model \
+    --dataset-suffix _tourism \
+    --epochs 20 \
+    --batch-size 32 \
+    --freeze-layers attention \
+    --learning-rate 1e-4 \
+    --loss-type mse \
+    --mixed-precision \
+    --aggressive-cleanup
+```
+
+### Layer Freezing Options
+
+The `--freeze-layers` parameter controls which parts of the model are adapted:
+
+- `none`: All layers trainable (most aggressive)
+- `embeddings`: Freeze embedding layers only (moderate)
+- `attention`: Freeze attention mechanisms (recommended balance)
+- `all_but_final`: Freeze everything except output layers (most conservative)
+
+### Key Parameters
+
+- `--pretrained-model`: Path to your pre-trained M4 model
+- `--dataset-suffix`: Dataset identifier (e.g., "_tourism")
+- `--epochs`: Number of training epochs
+- `--batch-size`: Batch size for training
+- `--learning-rate`: Learning rate (default: 1e-4)
+- `--loss-type`: Loss function:
+  - `mse`: Mean Squared Error
+  - `smape`: Symmetric Mean Absolute Percentage Error
+  - `gaussian_nll`: Gaussian Negative Log Likelihood
+  - `hybrid`: Combination of sMAPE and MSE
+
+### Memory Optimization
+
+- `--mixed-precision`: Enable mixed precision training
+- `--memory-limit`: Set GPU memory limit in MB
+- `--disable-memory-growth`: Disable memory growth
+- `--aggressive-cleanup`: Enable aggressive memory cleanup
+
+### Converting Finetuned Weights to Full Model
+
+After finetuning, the model is saved in weights-only format. To use it for evaluation or inference, you need to convert it to a full model:
+
+1. **Copy the finetuned weights to models/final directory**:
+```bash
+cp models/finetuned/finetuned_tourism_transformer_1_weights* models/final/
+```
+
+2. **Convert to full model format**:
+```bash
+python scripts/fix_model_format.py finetuned_tourism_transformer_1_weights
+```
+
+3. **Move the converted model back to finetuned directory** (optional):
+```bash
+mv models/final/finetuned_tourism_transformer_1_weights_full models/finetuned/
+```
+
+The converted full model will have "_full" appended to its name and can now be used for evaluation or inference.
+
+## 6. Evaluating on the M4 Test Set
 
 Evaluation requires a full model format (after conversion):
 
@@ -207,7 +325,71 @@ python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name transformer_1.0_d
 
 > **Note**: The M4 dataset files needed for evaluation can be downloaded from the [M4 Competition GitHub repository](https://github.com/Mcompetitions/M4-methods/tree/master/Dataset). Place the downloaded files in the `data/raw/` directory.
 
-## 6. Testing with Air Passengers Dataset
+## 7. Evaluating Tourism Models
+
+The tourism evaluation script follows the N-BEATS methodology for calculating MAPE:
+1. Calculate APE for each horizon of each series
+2. Average APEs across horizons for each series
+3. Average the series MAPEs to get final MAPE
+
+### Basic Usage
+
+```bash
+# Evaluate model without log transform
+python scripts/evaluate_tourism.py --model-name finetuned_tourism_transformer_1_weights_full
+
+# Evaluate model with log transform
+python scripts/evaluate_tourism.py --model-name finetuned_tourism_transformer_1_weights_full --log-transform
+```
+
+### Output Information
+
+The script provides:
+1. **Detailed Results**:
+   - Per-series MAPE across all horizons
+   - Individual APEs for each horizon (1-24 months)
+   - Saved in `results/tourism_evaluation_detailed.csv`
+
+2. **Overall Results**:
+   - Total number of series evaluated
+   - Forecast horizon (24 months)
+   - Overall Monthly MAPE
+   - Contribution weight to final score
+   - Saved in `results/tourism_evaluation_summary.csv`
+
+### N-BEATS Weighting Formula
+
+The script calculates the contribution to the final weighted MAPE using the N-BEATS formula:
+```
+MAPEAverage = (NYear/NTot × MAPEYear) + (NQuart/NTot × MAPEQuart) + (NMonth/NTot × MAPEMonth)
+
+Where:
+- NMonth = 24 × 366 (horizons × monthly series)
+- NTot = (4 × 518) + (8 × 427) + (24 × 366)
+- Monthly weight ≈ 0.567 (56.7% contribution)
+```
+
+### Example Results Format
+
+```
+Detailed Results:
+==================================================
+Series 1 - Average MAPE across all horizons: 5.75%
+Series 2 - Average MAPE across all horizons: 5.32%
+Series 3 - Average MAPE across all horizons: 5.98%
+...
+
+Overall Results:
+==================================================
+Total number of series: 366
+Forecast horizon: 24 months
+Overall Monthly MAPE: 5.68%
+
+Monthly weight in final score: 0.567
+This MAPE would contribute 56.7% to the final weighted average MAPE
+```
+
+## 8. Testing with Air Passengers Dataset
 
 The Air Passengers test script allows you to evaluate your model on a well-known time series dataset and includes backtesting capabilities to compare predictions with actual values.
 
@@ -258,7 +440,7 @@ python scripts/zero_shot_test/air_passengers_test.py --model_name transformer_1.
 
 The script automatically applies the inverse transformation to the predictions, so the results are presented in the original scale. The plots and metrics will reflect the data in its original units, making it easy to interpret the results.
 
-## 7. Testing with Probabilistic Forecasts
+## 9. Testing with Probabilistic Forecasts
 
 The probabilistic forecast script allows you to generate forecasts with confidence intervals using a probabilistic model, providing a range of possible future values rather than just a point forecast.
 
@@ -283,7 +465,7 @@ The probabilistic forecast script:
 
 This script is particularly useful for understanding the uncertainty in your forecasts and for making risk-informed decisions based on the range of possible future outcomes.
 
-## 8. Testing Model Performance on Short Time Series
+## 10. Testing Model Performance on Short Time Series
 
 - Tests the model on multiple short time series lengths (default: 3, 6, 9, 12, 18, 24, 48, and 60 months)
 - Predicts the same forecast horizon (default: 24 months) for each series length
@@ -314,7 +496,7 @@ The summary metrics table shows how prediction accuracy changes as the input tim
 python scripts/short_series_test/air_passengers_short_series_test.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled2103_full_4epochs --short_series_months 3 6 9 12 18 24 48 60 --forecast_months 24 
 ```
 
-## 9. Testing with Google Trends Data
+## 11. Testing with Google Trends Data
 
 The Google Trends test scripts allow you to evaluate your model on search trend data, specifically iPhone search volume. This demonstrates the model's performance on real-world search interest data with seasonal patterns.
 
@@ -368,7 +550,7 @@ These Google Trends test scripts demonstrate the model's ability to forecast sea
 
 > **Note**: With the recent reorganization of scripts into subdirectories, the Python path imports in these scripts have been updated to use `Path(__file__).resolve().parents[2]` to correctly find the project root directory when executed from their new locations.
 
-## 10. Script Organization Reference
+## 12. Script Organization Reference
 
 The scripts have been reorganized into logical subdirectories for better project organization:
 
