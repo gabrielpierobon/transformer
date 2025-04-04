@@ -295,6 +295,220 @@ def calculate_naive2_forecast(series: np.ndarray, forecast_horizon: int) -> np.n
     return np.repeat(last_value, forecast_horizon)
 
 
+def should_apply_log_transform(series: np.ndarray, window: int = 12, series_id: str = None) -> bool:
+    """
+    Enhanced test for log transformation need based on multiple criteria.
+    Only analyzes the last 60 points that will be used for prediction.
+    
+    Args:
+        series: Array of values to test (should be the last 60 points)
+        window: Window size for rolling calculations (default: 12 months)
+        series_id: Series identifier for logging purposes
+        
+    Returns:
+        Boolean indicating whether log transform should be applied
+    """
+    # Take last 60 points if more are provided
+    series = series[-60:]
+    
+    # Skip if not enough data
+    if len(series) < window * 2:  # Need at least 2 windows
+        logger.info(f"Series {series_id} - Too short for variance testing")
+        return False
+        
+    # Split series into three 20-point segments
+    seg_length = 20  # 60/3 = 20 points per segment
+    segments = [
+        series[0:seg_length],
+        series[seg_length:2*seg_length],
+        series[2*seg_length:]
+    ]
+    
+    # 1. Check variance ratios between segments
+    variances = [np.var(seg) for seg in segments]
+    var_ratio = max(variances) / min(variances) if min(variances) > 0 else float('inf')
+    
+    # 2. Check level-variance correlation
+    rolling_mean = pd.Series(series).rolling(window=window, center=True).mean()
+    rolling_std = pd.Series(series).rolling(window=window, center=True).std()
+    level_var_corr = np.corrcoef(
+        rolling_mean.dropna(), 
+        rolling_std.dropna()
+    )[0, 1]
+    
+    # 3. Check seasonal amplitude variation in recent data
+    seasonal_amplitudes = []
+    for i in range(len(series) - window):
+        season = series[i:i+window]
+        amplitude = np.max(season) - np.min(season)
+        seasonal_amplitudes.append(amplitude)
+    amp_ratio = max(seasonal_amplitudes) / min(seasonal_amplitudes) if min(seasonal_amplitudes) > 0 else float('inf')
+    
+    # Log detailed diagnostics
+    logger.info(f"\nVariance Analysis for Series {series_id} (last 60 points):")
+    logger.info(f"1. Segment Variances (20 points each):")
+    for i, var in enumerate(variances, 1):
+        logger.info(f"   Segment {i}: {var:.2f}")
+    logger.info(f"   Variance ratio between segments: {var_ratio:.2f} (threshold: 3.0)")
+    
+    logger.info(f"\n2. Level-Variance Relationship:")
+    logger.info(f"   Correlation: {level_var_corr:.2f} (threshold: 0.7)")
+    
+    logger.info(f"\n3. Seasonal Amplitude:")
+    logger.info(f"   Min amplitude: {min(seasonal_amplitudes):.2f}")
+    logger.info(f"   Max amplitude: {max(seasonal_amplitudes):.2f}")
+    logger.info(f"   Amplitude ratio: {amp_ratio:.2f} (threshold: 4.0)")
+    
+    # Decision criteria
+    needs_transform = (
+        var_ratio > 3.0 or          # Large variance changes between segments
+        level_var_corr > 0.7 or     # Strong level-variance relationship
+        amp_ratio > 4.0             # Large changes in seasonal amplitude
+    )
+    
+    # Log decision
+    if needs_transform:
+        logger.info("\nDecision: Apply log transform")
+        reasons = []
+        if var_ratio > 3.0:
+            reasons.append("High variance ratio between segments")
+        if level_var_corr > 0.7:
+            reasons.append("Strong level-variance correlation")
+        if amp_ratio > 4.0:
+            reasons.append("Large seasonal amplitude changes")
+        logger.info("Reasons: " + "; ".join(reasons))
+    else:
+        logger.info("\nDecision: No log transform needed")
+        logger.info("All metrics below thresholds")
+    
+    return needs_transform
+
+
+def plot_variance_diagnostics(series: np.ndarray, window: int = 12, series_id: str = None) -> None:
+    """
+    Create diagnostic plots for variance analysis of the last 60 points.
+    
+    Args:
+        series: Array of values to analyze (should be the last 60 points)
+        window: Window size for rolling calculations
+        series_id: Series identifier for plot title
+    """
+    # Take last 60 points if more are provided
+    series = series[-60:]
+    
+    plt.figure(figsize=(15, 10))
+    
+    # Create 2x2 subplot grid
+    plt.subplot(2, 2, 1)
+    # Original series
+    plt.plot(range(len(series)), series, label='Original')
+    plt.title(f'Series {series_id}: Last 60 Points')
+    plt.grid(True)
+    plt.legend()
+    
+    plt.subplot(2, 2, 2)
+    # Rolling statistics
+    rolling_mean = pd.Series(series).rolling(window=window, center=True).mean()
+    rolling_std = pd.Series(series).rolling(window=window, center=True).std()
+    plt.scatter(rolling_mean, rolling_std, alpha=0.5)
+    plt.xlabel('Level (Rolling Mean)')
+    plt.ylabel('Variation (Rolling Std)')
+    plt.title('Level-Variance Relationship')
+    plt.grid(True)
+    
+    plt.subplot(2, 2, 3)
+    # Segment variances (20 points each)
+    seg_length = 20
+    segments = [
+        series[0:seg_length],
+        series[seg_length:2*seg_length],
+        series[2*seg_length:]
+    ]
+    variances = [np.var(seg) for seg in segments]
+    plt.bar(['Last 60-40', 'Last 40-20', 'Last 20'], variances)
+    plt.title('Variance by 20-point Segment')
+    plt.ylabel('Variance')
+    plt.grid(True)
+    
+    plt.subplot(2, 2, 4)
+    # Seasonal amplitudes
+    seasonal_amplitudes = []
+    for i in range(len(series) - window):
+        season = series[i:i+window]
+        amplitude = np.max(season) - np.min(season)
+        seasonal_amplitudes.append(amplitude)
+    plt.plot(seasonal_amplitudes, label='Amplitude')
+    plt.title('Seasonal Amplitude Over Last 60 Points')
+    plt.ylabel('Amplitude')
+    plt.grid(True)
+    
+    plt.tight_layout()
+    
+    # Save plot
+    plots_dir = Path('evaluation/tourism/plots/diagnostics')
+    plots_dir.mkdir(exist_ok=True, parents=True)
+    plt.savefig(plots_dir / f'{series_id}_variance_diagnostics.png')
+    plt.close()
+
+
+def handle_extreme_outliers(series: np.ndarray, window_size: int = 5, iqr_multiplier: float = 4.0) -> np.ndarray:
+    """
+    Detect and handle extreme outliers in the series using IQR method.
+    Only extremely unusual values (beyond iqr_multiplier * IQR) are modified.
+    
+    Args:
+        series: Input series to check for outliers
+        window_size: Size of the window to use for median replacement
+        iqr_multiplier: Multiplier for IQR to detect extreme outliers (default: 4.0)
+        
+    Returns:
+        Series with extreme outliers replaced
+    """
+    # Work with a copy
+    cleaned_series = series.copy()
+    
+    # Calculate IQR
+    q1 = np.percentile(series, 25)
+    q3 = np.percentile(series, 75)
+    iqr = q3 - q1
+    
+    # Define extreme bounds
+    lower_bound = q1 - (iqr_multiplier * iqr)
+    upper_bound = q3 + (iqr_multiplier * iqr)
+    
+    # Find extreme outliers
+    extreme_mask = (series < lower_bound) | (series > upper_bound)
+    extreme_indices = np.where(extreme_mask)[0]
+    
+    if len(extreme_indices) > 0:
+        logger.info(f"Found {len(extreme_indices)} extreme outliers")
+        logger.info(f"Series range: [{np.min(series):.2f}, {np.max(series):.2f}]")
+        logger.info(f"IQR bounds: [{lower_bound:.2f}, {upper_bound:.2f}]")
+        
+        # Replace each outlier with median of nearby non-outlier values
+        for idx in extreme_indices:
+            # Define window boundaries
+            start_idx = max(0, idx - window_size)
+            end_idx = min(len(series), idx + window_size + 1)
+            
+            # Get window values excluding outliers
+            window_values = series[start_idx:end_idx]
+            window_mask = (window_values >= lower_bound) & (window_values <= upper_bound)
+            valid_values = window_values[window_mask]
+            
+            # If we have valid values in window, use their median
+            if len(valid_values) > 0:
+                replacement_value = np.median(valid_values)
+            else:
+                # If no valid values in window, use the bound closest to the original value
+                replacement_value = lower_bound if series[idx] < lower_bound else upper_bound
+            
+            cleaned_series[idx] = replacement_value
+            logger.info(f"Replaced outlier at index {idx}: {series[idx]:.2f} -> {replacement_value:.2f}")
+    
+    return cleaned_series
+
+
 def evaluate_model(
     model_name: str,
     train_df: pd.DataFrame,
@@ -304,7 +518,9 @@ def evaluate_model(
     input_length: int,
     random_seed: int,
     log_transform: bool = False,
-    include_naive2: bool = False
+    test_variance: bool = False,
+    include_naive2: bool = False,
+    specific_series: str = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Evaluate the model on the sampled series.
@@ -317,8 +533,10 @@ def evaluate_model(
         forecast_horizon: Number of periods to forecast
         input_length: Length of input sequence for the model
         random_seed: Random seed for reproducibility
-        log_transform: Whether to apply log transformation to the data
-        include_naive2: Whether to include Naive2 benchmark (averaging last 2 values)
+        log_transform: Whether to apply log transformation to all series
+        test_variance: Whether to test each series individually for log transformation
+        include_naive2: Whether to include Naive2 benchmark
+        specific_series: Optional specific series ID to evaluate
         
     Returns:
         Tuple of DataFrames with detailed and summary results
@@ -331,19 +549,27 @@ def evaluate_model(
     logger.info(f"Initializing model {model_name}")
     model = TransformerModel(model_name=model_name)
     
+    # Filter for specific series if provided
+    if specific_series:
+        if specific_series not in series_ids:
+            raise ValueError(f"Series {specific_series} not found in dataset")
+        series_ids = [specific_series]
+        logger.info(f"Evaluating only series {specific_series}")
+    
+    # Log transformation strategy
+    if log_transform:
+        logger.info("Strategy: Applying log transformation to ALL series")
+    elif test_variance:
+        logger.info("Strategy: Testing each series individually for log transformation")
+    else:
+        logger.info("Strategy: No log transformation will be applied")
+    
     # Prepare results dataframes
     detailed_results = []
     naive2_results = [] if include_naive2 else None
     
-    # Store original data for metrics calculation if using log transform
-    original_train_df = train_df.copy() if log_transform else None
-    original_test_df = test_df.copy() if log_transform else None
-    
-    # Apply log transformation if requested
-    if log_transform:
-        logger.info("Applying log transformation to the data")
-        train_df = log_transform_series(train_df)
-        test_df = log_transform_series(test_df)
+    # Store which series were log transformed if testing variance
+    log_transformed_series = set()
     
     # Process each series
     for i, series_id in enumerate(tqdm(series_ids, desc="Evaluating series")):
@@ -355,6 +581,53 @@ def evaluate_model(
         if len(series_train) < input_length:
             logger.warning(f"Series {series_id} has insufficient data ({len(series_train)} < {input_length}), skipping")
             continue
+        
+        # Log original data range before any processing
+        original_range = series_train['y'].values
+        logger.info(f"\nSeries {series_id} - Processing steps:")
+        logger.info(f"1. Original range: [{np.min(original_range):.2f}, {np.max(original_range):.2f}]")
+        
+        # STEP 1: Handle extreme outliers in the last 60 points before any transformations
+        original_values = series_train['y'].values[-60:].copy()
+        cleaned_values = handle_extreme_outliers(original_values)
+        if not np.array_equal(original_values, cleaned_values):
+            logger.info(f"2. Extreme outliers were handled in prediction window")
+            series_train['y'].values[-60:] = cleaned_values
+            logger.info(f"   After outlier handling: [{np.min(series_train['y'].values[-60:]):.2f}, {np.max(series_train['y'].values[-60:]):.2f}]")
+        
+        # STEP 2: Determine whether to apply log transform for this series
+        apply_log = False
+        if log_transform:
+            apply_log = True
+            logger.info(f"3. Will apply log transform (global setting)")
+        elif test_variance:
+            logger.info(f"3. Testing for level-variance relationship")
+            # Test variance on the cleaned data
+            apply_log = should_apply_log_transform(
+                series=series_train['y'].values[-60:],  # Using cleaned data
+                series_id=series_id
+            )
+            if apply_log:
+                log_transformed_series.add(series_id)
+                logger.info(f"   Decision: Log transform will be applied")
+                # Generate diagnostic plots on cleaned data
+                plot_variance_diagnostics(
+                    series=series_train['y'].values[-60:],
+                    series_id=series_id
+                )
+            else:
+                logger.info(f"   Decision: No log transform needed")
+        
+        # Store cleaned data before log transform
+        original_series_train = series_train.copy() if apply_log else None
+        original_series_test = series_test.copy() if apply_log else None
+        
+        # STEP 3: Apply log transformation if needed
+        if apply_log:
+            series_train['y'] = np.log1p(series_train['y'])
+            series_test['y'] = np.log1p(series_test['y'])
+            transformed_range = series_train['y'].values
+            logger.info(f"4. Log transformed range: [{np.min(transformed_range):.2f}, {np.max(transformed_range):.2f}]")
         
         # Generate forecast
         try:
@@ -370,11 +643,10 @@ def evaluate_model(
             )
             
             # Apply inverse transformation if log transform was used
-            if log_transform:
-                forecast['q_0.5'] = inverse_log_transform(forecast['q_0.5'].values)
-                
-                # Get original scale data for metrics calculation
-                series_test_orig = original_test_df[original_test_df['unique_id'] == series_id].copy()
+            if apply_log:
+                forecast['q_0.5'] = np.expm1(forecast['q_0.5'].values)
+                # Use original scale data for metrics calculation
+                series_test = original_series_test
             
             # Extract actual values from test set
             actual_values = []
@@ -382,7 +654,7 @@ def evaluate_model(
             for date in forecast['ds']:
                 date_str = pd.to_datetime(date)
                 actual_dates.append(date_str)
-                matching_rows = series_test if not log_transform else series_test_orig
+                matching_rows = series_test if not apply_log else series_test
                 matching_rows = matching_rows[matching_rows['ds'] == date_str]
                 if not matching_rows.empty:
                     actual_values.append(matching_rows['y'].values[0])
@@ -407,8 +679,8 @@ def evaluate_model(
                 naive2_forecast = calculate_naive2_forecast(train_series, forecast_horizon)
                 
                 # Apply inverse transformation if log transform was used
-                if log_transform:
-                    naive2_forecast = inverse_log_transform(naive2_forecast)
+                if apply_log:
+                    naive2_forecast = np.expm1(naive2_forecast)
                 
                 # Calculate metrics for Naive2
                 naive2_metrics = calculate_metrics(
@@ -424,8 +696,8 @@ def evaluate_model(
             # Plot forecast for every series
             plot_series_forecast(
                 series_id=series_id,
-                train_df=original_train_df if log_transform else train_df,
-                test_df=original_test_df if log_transform else test_df,
+                train_df=original_series_train if apply_log else train_df,
+                test_df=original_series_test if apply_log else test_df,
                 forecast=forecast,
                 model_name=model_name,
                 naive2_forecast=naive2_forecast if include_naive2 else None,
@@ -435,6 +707,13 @@ def evaluate_model(
         except Exception as e:
             logger.error(f"Error processing series {series_id}: {str(e)}")
             continue
+    
+    # Log summary of log-transformed series
+    if test_variance:
+        n_transformed = len(log_transformed_series)
+        logger.info(f"\nVariance testing results:")
+        logger.info(f"Number of series log-transformed: {n_transformed} ({n_transformed/len(series_ids)*100:.1f}%)")
+        logger.info(f"Series transformed: {sorted(log_transformed_series)}")
     
     # Convert detailed results to DataFrame
     detailed_df = pd.DataFrame(detailed_results)
@@ -515,7 +794,21 @@ def plot_series_forecast(
     plt.figure(figsize=(12, 6))
     
     # Plot training data
-    plt.plot(series_train['ds'], series_train['y'], 'b-', label='Training')
+    plt.plot(series_train['ds'], series_train['y'], 'b-', label='Training', alpha=0.7)
+    
+    # Highlight the inference window (last 60 points)
+    if len(series_train) >= 60:
+        inference_data = series_train.iloc[-60:]
+        plt.fill_between(
+            inference_data['ds'],
+            inference_data['y'].min() * 0.95,  # Extend slightly below
+            inference_data['y'].max() * 1.05,  # Extend slightly above
+            color='lightblue',
+            alpha=0.3,
+            label='Inference Window (Last 60 Points)'
+        )
+        # Plot the inference window data with higher opacity
+        plt.plot(inference_data['ds'], inference_data['y'], 'b-', alpha=1.0)
     
     # Plot test data
     plt.plot(series_test['ds'], series_test['y'], 'g-', label='Actual')
@@ -536,12 +829,12 @@ def plot_series_forecast(
     plt.title(f'Series: {series_id}')
     plt.xlabel('Date')
     plt.ylabel('Value')
-    plt.legend()
+    plt.legend(loc='upper left')
     plt.grid(True)
     
     # Save plot
     plot_path = f"evaluation/tourism/plots/{model_name}_{series_id}.png"
-    plt.savefig(plot_path)
+    plt.savefig(plot_path, bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -754,10 +1047,18 @@ def main():
     parser.add_argument('--random-seed', type=int, default=42,
                         help='Random seed for reproducibility')
     parser.add_argument('--log-transform', action='store_true',
-                        help='Apply log transformation to the data before forecasting (to handle increasing variance)')
+                        help='Apply log transformation to all series')
+    parser.add_argument('--test-variance', action='store_true',
+                        help='Test each series individually for log transformation')
     parser.add_argument('--include-naive2', action='store_true',
                         help='Include Naive2 benchmark (average of last 2 values)')
+    parser.add_argument('--series-id', type=str,
+                        help='Evaluate only this specific series ID')
     args = parser.parse_args()
+    
+    # Validate arguments
+    if args.log_transform and args.test_variance:
+        parser.error("Cannot use both --log-transform and --test-variance. Choose one method.")
     
     # Create necessary directories
     setup_directories()
@@ -776,7 +1077,7 @@ def main():
         random_seed=args.random_seed
     )
     
-    # Evaluate model
+    # Evaluate model with new parameters
     detailed_df, summary_df = evaluate_model(
         model_name=args.model_name,
         train_df=sampled_train_df,
@@ -786,7 +1087,9 @@ def main():
         input_length=args.input_length,
         random_seed=args.random_seed,
         log_transform=args.log_transform,
-        include_naive2=args.include_naive2
+        test_variance=args.test_variance,
+        include_naive2=args.include_naive2,
+        specific_series=args.series_id
     )
     
     # Save results
