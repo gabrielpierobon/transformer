@@ -103,12 +103,13 @@ def load_tourism_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     return train_df, test_df
 
 
-def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 2.5) -> Tuple[pd.DataFrame, np.ndarray]:
+def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 2.5, focus_last_n: int = 60) -> Tuple[pd.DataFrame, np.ndarray]:
     """Detect and replace outliers in a time series.
     
     Args:
         time_series: DataFrame with 'ds' and 'y' columns
         threshold: Z-score threshold to identify outliers (default: 2.5)
+        focus_last_n: Focus outlier detection on the last N points (default: 60)
     
     Returns:
         Tuple of (cleaned DataFrame with outliers replaced, numpy array of outlier indices)
@@ -117,52 +118,132 @@ def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 2.5)
         # Create a copy to avoid modifying the original data
         cleaned_series = time_series.copy()
         
-        # 1. Rolling window method - good for seasonal patterns
-        window_size = min(13, len(time_series) // 2)  # Use 1-year window (monthly data) or half the data if smaller
-        if window_size < 3:
-            window_size = 3  # Minimum window size
+        # If we have more data than focus_last_n, we'll analyze two parts:
+        # 1. The last focus_last_n points (critically important for forecasting)
+        # 2. The rest of the data (less important but still useful to clean)
         
-        # Calculate rolling statistics (centered)
-        rolling_median = cleaned_series['y'].rolling(window=window_size, center=True).median()
+        if len(time_series) > focus_last_n:
+            # Split the data
+            focus_data = cleaned_series.iloc[-focus_last_n:].copy()
+            rest_data = cleaned_series.iloc[:-focus_last_n].copy()
+            
+            # Track outliers for both parts
+            focus_outliers = np.zeros(len(focus_data), dtype=bool)
+            rest_outliers = np.zeros(len(rest_data), dtype=bool)
+            
+            # Use a more sensitive threshold for the focus window
+            focus_threshold = threshold  # Use the full sensitivity for the focus window
+            rest_threshold = threshold * 1.5  # Less sensitive for historical data
+            
+            # 1. DETECT OUTLIERS IN FOCUS WINDOW (last 60 points)
+            # Calculate rolling window statistics
+            window_size = min(13, len(focus_data) // 2)  # Use 1-year window or half data if smaller
+            if window_size < 3:
+                window_size = 3  # Minimum window size
+            
+            # Calculate rolling statistics (centered)
+            rolling_median = focus_data['y'].rolling(window=window_size, center=True).median()
+            rolling_median = rolling_median.fillna(method='ffill').fillna(method='bfill')
+            
+            rolling_std = focus_data['y'].rolling(window=window_size, center=True).std()
+            rolling_std = rolling_std.fillna(method='ffill').fillna(method='bfill')
+            rolling_std = rolling_std.replace(0, focus_data['y'].std() if focus_data['y'].std() > 0 else 1)
+            
+            # Calculate z-scores
+            z_scores = (focus_data['y'] - rolling_median) / rolling_std
+            
+            # Detect potential outliers based on z-scores
+            focus_outliers_zscore = abs(z_scores) > focus_threshold
+            
+            # Detect extreme drops (more than 30% change)
+            pct_changes = focus_data['y'].pct_change().fillna(0)
+            extreme_drops = abs(pct_changes) > 0.3
+            
+            # Combine detection methods
+            focus_outliers = focus_outliers_zscore | extreme_drops
+            
+            # 2. DETECT OUTLIERS IN REST OF DATA (if any)
+            if len(rest_data) > 0:
+                # Similar approach but with less sensitivity
+                rest_window_size = min(13, len(rest_data) // 2)
+                if rest_window_size < 3:
+                    rest_window_size = 3
+                
+                rest_rolling_median = rest_data['y'].rolling(window=rest_window_size, center=True).median()
+                rest_rolling_median = rest_rolling_median.fillna(method='ffill').fillna(method='bfill')
+                
+                rest_rolling_std = rest_data['y'].rolling(window=rest_window_size, center=True).std()
+                rest_rolling_std = rest_rolling_std.fillna(method='ffill').fillna(method='bfill')
+                rest_rolling_std = rest_rolling_std.replace(0, rest_data['y'].std() if rest_data['y'].std() > 0 else 1)
+                
+                rest_z_scores = (rest_data['y'] - rest_rolling_median) / rest_rolling_std
+                rest_outliers_zscore = abs(rest_z_scores) > rest_threshold
+                
+                # Only focus on extreme outliers in historical data
+                rest_pct_changes = rest_data['y'].pct_change().fillna(0)
+                rest_extreme_drops = abs(rest_pct_changes) > 0.5  # Higher threshold for historical data
+                
+                rest_outliers = rest_outliers_zscore | rest_extreme_drops
+                
+                # Replace outliers in rest data
+                rest_data.loc[rest_outliers, 'y'] = rest_rolling_median[rest_outliers]
+                
+                # Get original indices for rest outliers
+                rest_outlier_indices = np.where(rest_outliers)[0]
+            else:
+                rest_outlier_indices = np.array([])
+            
+            # Replace outliers in focus data
+            focus_data.loc[focus_outliers, 'y'] = rolling_median[focus_outliers]
+            
+            # Get original indices for focus outliers
+            focus_outlier_indices = np.where(focus_outliers)[0] + len(rest_data)
+            
+            # Combine outlier indices
+            outlier_indices = np.concatenate([rest_outlier_indices, focus_outlier_indices])
+            
+            # Combine the cleaned data
+            cleaned_series = pd.concat([rest_data, focus_data], axis=0)
+            cleaned_series.reset_index(drop=True, inplace=True)
+            
+        else:
+            # If we don't have more than focus_last_n points, just analyze all the data
+            # Calculate rolling window statistics
+            window_size = min(13, len(cleaned_series) // 2)
+            if window_size < 3:
+                window_size = 3
+                
+            rolling_median = cleaned_series['y'].rolling(window=window_size, center=True).median()
+            rolling_median = rolling_median.fillna(method='ffill').fillna(method='bfill')
+            
+            rolling_std = cleaned_series['y'].rolling(window=window_size, center=True).std()
+            rolling_std = rolling_std.fillna(method='ffill').fillna(method='bfill')
+            rolling_std = rolling_std.replace(0, cleaned_series['y'].std() if cleaned_series['y'].std() > 0 else 1)
+            
+            z_scores = (cleaned_series['y'] - rolling_median) / rolling_std
+            
+            outliers_zscore = abs(z_scores) > threshold
+            
+            pct_changes = cleaned_series['y'].pct_change().fillna(0)
+            extreme_drops = abs(pct_changes) > 0.3
+            
+            outliers = outliers_zscore | extreme_drops
+            
+            # Replace outliers
+            cleaned_series.loc[outliers, 'y'] = rolling_median[outliers]
+            
+            outlier_indices = np.where(outliers)[0]
         
-        # For the edges where rolling median produces NaN, use the nearest valid value
-        rolling_median = rolling_median.fillna(method='ffill').fillna(method='bfill')
-        
-        # Calculate z-scores
-        rolling_std = cleaned_series['y'].rolling(window=window_size, center=True).std()
-        rolling_std = rolling_std.fillna(method='ffill').fillna(method='bfill')
-        
-        # Avoid division by zero
-        rolling_std = rolling_std.replace(0, cleaned_series['y'].std() if cleaned_series['y'].std() > 0 else 1)
-        
-        # Calculate z-scores
-        z_scores = (cleaned_series['y'] - rolling_median) / rolling_std
-        
-        # 2. Specific detection for extreme drops
-        # Look at percentage changes (will be very sensitive to large drops)
-        pct_changes = cleaned_series['y'].pct_change().fillna(0)
-        
-        # Flag any point with more than 30% drop as a potential outlier
-        extreme_drops = abs(pct_changes) > 0.3
-        
-        # 3. Combined detection
-        # Identify outliers using z-score threshold
-        outliers_zscore = abs(z_scores) > threshold
-        
-        # Combine with extreme drops
-        outliers = outliers_zscore | extreme_drops
-        
-        outlier_indices = np.where(outliers)[0]
-        
-        # Log outliers detected
+        # Log detected outliers
         if len(outlier_indices) > 0:
             logger.info(f"Detected {len(outlier_indices)} outliers in series {time_series['unique_id'].iloc[0]}")
             for idx in outlier_indices:
-                logger.info(f"Outlier at index {idx}: value={time_series['y'].iloc[idx]}, "
-                           f"date={time_series['ds'].iloc[idx]}, z-score={z_scores.iloc[idx]:.2f}")
-        
-        # Replace outliers with local median
-        cleaned_series.loc[outliers, 'y'] = rolling_median[outliers]
+                if idx < len(time_series):
+                    logger.info(f"Outlier at index {idx}: value={time_series['y'].iloc[idx]}, "
+                              f"date={time_series['ds'].iloc[idx]}")
+                    # Indicate if this outlier is in the focus window (last 60 points)
+                    if idx >= len(time_series) - focus_last_n:
+                        logger.info(f"  ^ This outlier is in the last {focus_last_n} points used for forecasting")
         
         return cleaned_series, outlier_indices
     
