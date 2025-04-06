@@ -47,7 +47,7 @@ def calculate_smape(actual: np.ndarray, predicted: np.ndarray) -> float:
     mask = denominator > 0
     if np.any(mask):
         return np.mean(np.abs(predicted[mask] - actual[mask]) / denominator[mask]) * 100
-    return np.nan
+        return np.nan
 
 
 def calculate_naive2_forecast(values: np.ndarray, horizon: int) -> np.ndarray:
@@ -110,7 +110,7 @@ def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 8.0,
         time_series: DataFrame with 'ds' and 'y' columns
         threshold: Z-score threshold to identify outliers (default: 8.0)
         focus_last_n: Focus outlier detection on the last N points (default: 60)
-    
+        
     Returns:
         Tuple of (cleaned DataFrame with outliers replaced, numpy array of outlier indices)
     """
@@ -220,7 +220,8 @@ def plot_forecast(
     nbeats_forecast_full: pd.DataFrame,
     naive2_forecast: np.ndarray,
     model_name: str,
-    outlier_indices: np.ndarray = None
+    outlier_indices: np.ndarray = None,
+    was_log_transformed: bool = False
 ) -> None:
     """Plot and save forecast for a single series."""
     plt.figure(figsize=(12, 6))
@@ -248,68 +249,78 @@ def plot_forecast(
             label='Last 60 Points'
         )
     
-    # Plot test data
-    plt.plot(test_df['ds'], test_df['y'], 'g-', label='Actual')
+    # Plot actuals from test set
+    actuals = []
+    for date in forecast['ds']:
+        date_str = pd.to_datetime(date)
+        matching_rows = test_df[test_df['ds'] == date_str]
+        if not matching_rows.empty:
+            actuals.append((date_str, matching_rows.iloc[0]['y']))
+    
+    if actuals:
+        dates, values = zip(*actuals)
+        plt.plot(dates, values, 'g-', label='Actual', linewidth=2.5)
+    
+    # Plot forecasts
+    transformer_label = 'Transformer'
+    if was_log_transformed:
+        transformer_label += ' (log transformed)'
+    plt.plot(forecast['ds'], forecast['q_0.5'], 'r--', label=transformer_label, linewidth=1.5)
     
     # Find column for NBEATS 60 forecast
     nbeats_column_60 = None
-    # First check for our added column
     if 'NBEATS_60' in nbeats_forecast_60.columns:
         nbeats_column_60 = 'NBEATS_60'
-    # Then check for NBEATS column
     elif 'NBEATS' in nbeats_forecast_60.columns:
         nbeats_column_60 = 'NBEATS'
-    # Finally, try any numeric column that's not ds or unique_id
     else:
         for col in nbeats_forecast_60.columns:
             if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast_60[col]):
-                logger.info(f"Using column '{col}' for NBEATS_60 forecast in plot")
                 nbeats_column_60 = col
                 break
     
     # Find column for NBEATS full forecast
     nbeats_column_full = None
-    # First check for our added column
     if 'NBEATS_Full' in nbeats_forecast_full.columns:
         nbeats_column_full = 'NBEATS_Full'
-    # Then check for NBEATS column
     elif 'NBEATS' in nbeats_forecast_full.columns:
         nbeats_column_full = 'NBEATS'
-    # Finally, try any numeric column that's not ds or unique_id
     else:
         for col in nbeats_forecast_full.columns:
             if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast_full[col]):
-                logger.info(f"Using column '{col}' for NBEATS_Full forecast in plot")
                 nbeats_column_full = col
                 break
     
-    # Plot forecasts
-    plt.plot(forecast['ds'], forecast['q_0.5'], 'r--', label='Transformer')
-    
+    # Plot NBEATS forecasts if columns were found
     if nbeats_column_60:
         plt.plot(nbeats_forecast_60['ds'], nbeats_forecast_60[nbeats_column_60], 'c--', 
-                 label='NBEATS (60 points)')
+                 label='NBEATS (60 points)', linewidth=1.5)
     
     if nbeats_column_full:
         plt.plot(nbeats_forecast_full['ds'], nbeats_forecast_full[nbeats_column_full], 'm--', 
-                 label='NBEATS (full history)')
+                 label='NBEATS (full history)', linewidth=1.5)
     
-    plt.plot(forecast['ds'], naive2_forecast, 'k:', label='Naive2')
+    # Plot Naive2 forecast
+    forecast_dates = [pd.to_datetime(d) for d in forecast['ds']]
+    plt.plot(forecast_dates, naive2_forecast, 'k:', label='Naive2', linewidth=1.5)
     
-    # Add vertical line at forecast start
-    plt.axvline(x=train_df['ds'].max(), color='k', linestyle='--', alpha=0.5)
+    # Add a vertical line to separate train and test
+    if len(train_df) > 0:
+        last_train_date = train_df['ds'].iloc[-1]
+        plt.axvline(x=last_train_date, color='gray', linestyle='--', linewidth=1.5)
     
-    # Customize plot
-    plt.title(f'Series: {series_id}')
-    plt.xlabel('Date')
-    plt.ylabel('Value')
-    plt.legend(loc='upper left')
+    # Add grid, title, and labels
     plt.grid(True, alpha=0.3)
+    plt.title(f'Series: {series_id}' + (' (Log Transformed)' if was_log_transformed else ''), fontsize=16)
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('Value', fontsize=12)
+    plt.legend(loc='upper left')
     
-    # Save plot
-    os.makedirs("evaluation/tourism/plots", exist_ok=True)
-    plot_path = f"evaluation/tourism/plots/{model_name}_{series_id}.png"
-    plt.savefig(plot_path, bbox_inches='tight', dpi=300)
+    # Adjust layout and save the plot
+    plt.tight_layout()
+    plot_dir = Path(f"evaluation/tourism/plots/{model_name}")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(plot_dir / f"{series_id}.png")
     plt.close()
 
 
@@ -391,6 +402,90 @@ def generate_nbeats_forecast(train_df: pd.DataFrame, horizon: int, use_full_hist
         return empty_forecast
 
 
+def should_log_transform(series: pd.DataFrame, inference_window: int = 60) -> bool:
+    """Determine if the series should be log-transformed based on increasing variance in inference window.
+    
+    Args:
+        series: DataFrame with 'ds' and 'y' columns
+        inference_window: Number of recent points to analyze (default: 60)
+        
+    Returns:
+        Boolean indicating whether log transformation should be applied
+    """
+    # Make sure we have enough data for the test
+    if len(series) < inference_window or inference_window < 10:
+        return False
+    
+    # Get the last inference_window points
+    y_values = series['y'].values[-inference_window:]
+    
+    # Check 1: Test for variance increase using first half vs second half of the window
+    half_size = inference_window // 2
+    first_half_std = np.std(y_values[:half_size])
+    second_half_std = np.std(y_values[half_size:])
+    
+    # Calculate variance ratio
+    variance_ratio = second_half_std / first_half_std if first_half_std > 0 else 1.0
+    
+    # Check 2: Test correlation between level and volatility
+    indices = np.arange(len(y_values))
+    rolling_std = pd.Series(y_values).rolling(window=5).std().fillna(method='bfill')
+    level_vol_corr = np.corrcoef(y_values, rolling_std)[0, 1]
+    
+    # Check 3: Test if data increases in magnitude significantly
+    first_quarter_mean = np.mean(y_values[:inference_window//4]) if inference_window >= 4 else np.mean(y_values[:5])
+    last_quarter_mean = np.mean(y_values[-inference_window//4:]) if inference_window >= 4 else np.mean(y_values[-5:])
+    level_increase_ratio = last_quarter_mean / first_quarter_mean if first_quarter_mean > 0 else 1.0
+    
+    # Check 4: Check range ratio (max/min) to detect high amplitude seasonality
+    range_ratio = np.max(y_values) / np.min(y_values) if np.min(y_values) > 0 else 1.0
+    
+    # Check 5: Calculate coefficient of variation (CV) to measure relative dispersion
+    cv = np.std(y_values) / np.mean(y_values) if np.mean(y_values) > 0 else 0
+    
+    # Decision rule: Apply log transform if:
+    # 1. Strong correlation between level and volatility (primary indicator)
+    # 2. Either variance is increasing OR level is increasing OR range is wide OR CV is high
+    logger.info(f"Variance test results - Ratio: {variance_ratio:.2f}, Level-Vol Corr: {level_vol_corr:.2f}, " +
+                f"Level Increase: {level_increase_ratio:.2f}, Range Ratio: {range_ratio:.2f}, CV: {cv:.2f}")
+    
+    should_transform = (
+        level_vol_corr > 0.3 and  # Strong correlation between level and volatility
+        (
+            variance_ratio > 1.1 or  # Slightly increasing variance (reduced threshold)
+            level_increase_ratio > 1.05 or  # Slightly increasing level (reduced threshold)
+            range_ratio > 2.5 or  # Wide range between min and max values
+            cv > 0.3  # High coefficient of variation
+        )
+    )
+    
+    if should_transform:
+        logger.info(f"Log transform recommended for series based on: " +
+                    f"Level-Vol Corr={level_vol_corr:.2f}, CV={cv:.2f}, Range Ratio={range_ratio:.2f}")
+    
+    return should_transform
+
+
+def apply_log_transform(series: pd.DataFrame) -> Tuple[pd.DataFrame, bool]:
+    """Apply log transformation to series if positive.
+    
+    Args:
+        series: DataFrame with 'ds' and 'y' columns
+        
+    Returns:
+        Tuple of (transformed DataFrame, was_transformed flag)
+    """
+    # Check if all values are positive (required for log transform)
+    if np.all(series['y'] > 0):
+        transformed = series.copy()
+        transformed['y'] = np.log(transformed['y'])
+        return transformed, True
+    else:
+        # Log warning that log transform couldn't be applied due to non-positive values
+        logger.warning("Log transform not applied: series contains zero or negative values")
+        return series.copy(), False
+
+
 def evaluate_model(
     model_name: str,
     train_df: pd.DataFrame,
@@ -427,18 +522,44 @@ def evaluate_model(
             # Use an extremely conservative threshold to detect only true anomalies
             cleaned_series_train, outlier_indices = detect_and_clean_outliers(series_train, threshold=8.0)
             
-            # Generate transformer forecast using cleaned data
-            cleaned_series_train_indexed = cleaned_series_train.set_index('ds')
-            forecast = model.predict(
-                series_df=cleaned_series_train_indexed,
-                n=forecast_horizon
-            )
+            # Check if log transformation is needed for Transformer (based on variance pattern)
+            needs_log_transform = should_log_transform(cleaned_series_train)
+            was_transformed = False
+            
+            # Generate transformer forecast using cleaned data (with log transform if needed)
+            if needs_log_transform:
+                logger.info(f"Applying log transform for series {series_id} (Transformer model only)")
+                transformed_series, was_transformed = apply_log_transform(cleaned_series_train)
+                transformed_series_indexed = transformed_series.set_index('ds')
+                
+                # Generate forecast in log space
+                log_forecast = model.predict(
+                    series_df=transformed_series_indexed,
+                    n=forecast_horizon
+                )
+                
+                # Back-transform forecast
+                if was_transformed:
+                    for col in log_forecast.columns:
+                        if col != 'ds' and pd.api.types.is_numeric_dtype(log_forecast[col]):
+                            log_forecast[col] = np.exp(log_forecast[col])
+                
+                forecast = log_forecast
+            else:
+                # No transformation needed
+                logger.info(f"No log transform needed for series {series_id}")
+                cleaned_series_train_indexed = cleaned_series_train.set_index('ds')
+                forecast = model.predict(
+                    series_df=cleaned_series_train_indexed,
+                    n=forecast_horizon
+                )
             
             # Generate NBEATS forecasts - both 60-point and full history versions
+            # (No log transform for NBEATS as requested)
             nbeats_forecast_60 = generate_nbeats_forecast(cleaned_series_train, forecast_horizon, use_full_history=False)
             nbeats_forecast_full = generate_nbeats_forecast(cleaned_series_train, forecast_horizon, use_full_history=True)
             
-            # Generate Naive2 forecast from cleaned data
+            # Generate Naive2 forecast from cleaned data (no log transform)
             naive2_forecast = calculate_naive2_forecast(
                 values=cleaned_series_train['y'].values,
                 horizon=forecast_horizon
@@ -501,13 +622,14 @@ def evaluate_model(
             nbeats_full_metrics = calculate_metrics(actual_values, nbeats_forecast_full[nbeats_column_full].values)
             naive2_metrics = calculate_metrics(actual_values, naive2_forecast)
             
-            # Add information about number of outliers detected
+            # Add information about number of outliers detected and log transform status
             outlier_count = len(outlier_indices) if outlier_indices is not None else 0
             
             # Store results with proper column names
             results.append({
                 'series_id': series_id,
                 'outliers_count': outlier_count,
+                'log_transformed': was_transformed,
                 'transformer_mae': transformer_metrics['mae'],
                 'transformer_mape': transformer_metrics['mape'],
                 'transformer_smape': transformer_metrics['smape'],
@@ -536,9 +658,10 @@ def evaluate_model(
                 nbeats_forecast_full=nbeats_forecast_full,
                 naive2_forecast=naive2_forecast,
                 model_name=model_name,
-                outlier_indices=outlier_indices
+                outlier_indices=outlier_indices,
+                was_log_transformed=was_transformed
             )
-            
+                
         except Exception as e:
             # Convert exception to string to handle any type of error object
             error_message = f"{type(e).__name__}: {e}"
@@ -547,6 +670,7 @@ def evaluate_model(
             results.append({
                 'series_id': series_id,
                 'outliers_count': 0,
+                'log_transformed': False,
                 'transformer_mae': np.nan,
                 'transformer_mape': np.nan,
                 'transformer_smape': np.nan,
