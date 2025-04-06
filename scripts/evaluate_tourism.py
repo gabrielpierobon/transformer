@@ -103,12 +103,12 @@ def load_tourism_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     return train_df, test_df
 
 
-def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 2.5, focus_last_n: int = 60) -> Tuple[pd.DataFrame, np.ndarray]:
+def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 8.0, focus_last_n: int = 60) -> Tuple[pd.DataFrame, np.ndarray]:
     """Detect and replace outliers in a time series.
     
     Args:
         time_series: DataFrame with 'ds' and 'y' columns
-        threshold: Z-score threshold to identify outliers (default: 2.5)
+        threshold: Z-score threshold to identify outliers (default: 8.0)
         focus_last_n: Focus outlier detection on the last N points (default: 60)
     
     Returns:
@@ -118,132 +118,90 @@ def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 2.5,
         # Create a copy to avoid modifying the original data
         cleaned_series = time_series.copy()
         
-        # If we have more data than focus_last_n, we'll analyze two parts:
-        # 1. The last focus_last_n points (critically important for forecasting)
-        # 2. The rest of the data (less important but still useful to clean)
+        # A seasonal pattern is normal in tourism data
+        # Only flag extremely unusual values (like drops to near zero or massive irregular spikes)
         
-        if len(time_series) > focus_last_n:
-            # Split the data
-            focus_data = cleaned_series.iloc[-focus_last_n:].copy()
-            rest_data = cleaned_series.iloc[:-focus_last_n].copy()
+        # Calculate year-over-year ratios where possible (tourism data is often seasonal)
+        # This helps detect when a value is extreme compared to the same month in previous years
+        if len(cleaned_series) >= 12:
+            # Calculate the ratio to the same month in the previous year
+            monthly_values = cleaned_series['y'].values
+            yearly_ratios = []
+            for i in range(12, len(monthly_values)):
+                yearly_ratios.append(monthly_values[i] / max(monthly_values[i-12], 1.0))  # Avoid division by zero
             
-            # Track outliers for both parts
-            focus_outliers = np.zeros(len(focus_data), dtype=bool)
-            rest_outliers = np.zeros(len(rest_data), dtype=bool)
+            # Pad the beginning where we couldn't calculate ratios
+            yearly_ratios = [1.0] * 12 + yearly_ratios
             
-            # Use a more sensitive threshold for the focus window
-            focus_threshold = threshold  # Use the full sensitivity for the focus window
-            rest_threshold = threshold * 1.5  # Less sensitive for historical data
-            
-            # 1. DETECT OUTLIERS IN FOCUS WINDOW (last 60 points)
-            # Calculate rolling window statistics
-            window_size = min(13, len(focus_data) // 2)  # Use 1-year window or half data if smaller
-            if window_size < 3:
-                window_size = 3  # Minimum window size
-            
-            # Calculate rolling statistics (centered)
-            rolling_median = focus_data['y'].rolling(window=window_size, center=True).median()
-            rolling_median = rolling_median.fillna(method='ffill').fillna(method='bfill')
-            
-            rolling_std = focus_data['y'].rolling(window=window_size, center=True).std()
-            rolling_std = rolling_std.fillna(method='ffill').fillna(method='bfill')
-            rolling_std = rolling_std.replace(0, focus_data['y'].std() if focus_data['y'].std() > 0 else 1)
-            
-            # Calculate z-scores
-            z_scores = (focus_data['y'] - rolling_median) / rolling_std
-            
-            # Detect potential outliers based on z-scores
-            focus_outliers_zscore = abs(z_scores) > focus_threshold
-            
-            # Detect extreme drops (more than 30% change)
-            pct_changes = focus_data['y'].pct_change().fillna(0)
-            extreme_drops = abs(pct_changes) > 0.3
-            
-            # Combine detection methods
-            focus_outliers = focus_outliers_zscore | extreme_drops
-            
-            # 2. DETECT OUTLIERS IN REST OF DATA (if any)
-            if len(rest_data) > 0:
-                # Similar approach but with less sensitivity
-                rest_window_size = min(13, len(rest_data) // 2)
-                if rest_window_size < 3:
-                    rest_window_size = 3
-                
-                rest_rolling_median = rest_data['y'].rolling(window=rest_window_size, center=True).median()
-                rest_rolling_median = rest_rolling_median.fillna(method='ffill').fillna(method='bfill')
-                
-                rest_rolling_std = rest_data['y'].rolling(window=rest_window_size, center=True).std()
-                rest_rolling_std = rest_rolling_std.fillna(method='ffill').fillna(method='bfill')
-                rest_rolling_std = rest_rolling_std.replace(0, rest_data['y'].std() if rest_data['y'].std() > 0 else 1)
-                
-                rest_z_scores = (rest_data['y'] - rest_rolling_median) / rest_rolling_std
-                rest_outliers_zscore = abs(rest_z_scores) > rest_threshold
-                
-                # Only focus on extreme outliers in historical data
-                rest_pct_changes = rest_data['y'].pct_change().fillna(0)
-                rest_extreme_drops = abs(rest_pct_changes) > 0.5  # Higher threshold for historical data
-                
-                rest_outliers = rest_outliers_zscore | rest_extreme_drops
-                
-                # Replace outliers in rest data
-                rest_data.loc[rest_outliers, 'y'] = rest_rolling_median[rest_outliers]
-                
-                # Get original indices for rest outliers
-                rest_outlier_indices = np.where(rest_outliers)[0]
-            else:
-                rest_outlier_indices = np.array([])
-            
-            # Replace outliers in focus data
-            focus_data.loc[focus_outliers, 'y'] = rolling_median[focus_outliers]
-            
-            # Get original indices for focus outliers
-            focus_outlier_indices = np.where(focus_outliers)[0] + len(rest_data)
-            
-            # Combine outlier indices
-            outlier_indices = np.concatenate([rest_outlier_indices, focus_outlier_indices])
-            
-            # Combine the cleaned data
-            cleaned_series = pd.concat([rest_data, focus_data], axis=0)
-            cleaned_series.reset_index(drop=True, inplace=True)
-            
+            # Identify extreme ratios (more than 2x increase or less than 50% of previous year)
+            extreme_yearly_ratios = []
+            for i in range(len(yearly_ratios)):
+                ratio = yearly_ratios[i]
+                if ratio > 2.0 or ratio < 0.5:
+                    # Only flag if it's not part of a consistent pattern
+                    if i >= 24:
+                        # Check if this is a recurring pattern (seasonal changes can be large but consistent)
+                        prev_ratio = yearly_ratios[i-12]
+                        if abs(ratio - prev_ratio) > 0.5:  # If ratio differs by more than 50% from previous year's ratio
+                            extreme_yearly_ratios.append(i)
+                    else:
+                        extreme_yearly_ratios.append(i)
         else:
-            # If we don't have more than focus_last_n points, just analyze all the data
-            # Calculate rolling window statistics
-            window_size = min(13, len(cleaned_series) // 2)
-            if window_size < 3:
-                window_size = 3
-                
-            rolling_median = cleaned_series['y'].rolling(window=window_size, center=True).median()
-            rolling_median = rolling_median.fillna(method='ffill').fillna(method='bfill')
-            
-            rolling_std = cleaned_series['y'].rolling(window=window_size, center=True).std()
-            rolling_std = rolling_std.fillna(method='ffill').fillna(method='bfill')
-            rolling_std = rolling_std.replace(0, cleaned_series['y'].std() if cleaned_series['y'].std() > 0 else 1)
-            
-            z_scores = (cleaned_series['y'] - rolling_median) / rolling_std
-            
-            outliers_zscore = abs(z_scores) > threshold
-            
-            pct_changes = cleaned_series['y'].pct_change().fillna(0)
-            extreme_drops = abs(pct_changes) > 0.3
-            
-            outliers = outliers_zscore | extreme_drops
-            
-            # Replace outliers
-            cleaned_series.loc[outliers, 'y'] = rolling_median[outliers]
-            
-            outlier_indices = np.where(outliers)[0]
+            extreme_yearly_ratios = []
         
-        # Log detected outliers
+        # Calculate rolling median and std with a very large window (global approach)
+        window_size = min(len(cleaned_series) // 4, 24)  # Use up to 2 years of data, but at least 25% of time series
+        window_size = max(window_size, 5)  # Ensure at least 5 points for statistics
+            
+        rolling_median = cleaned_series['y'].rolling(window=window_size, center=True).median()
+        rolling_median = rolling_median.fillna(method='ffill').fillna(method='bfill')
+        
+        rolling_std = cleaned_series['y'].rolling(window=window_size, center=True).std()
+        rolling_std = rolling_std.fillna(method='ffill').fillna(method='bfill')
+        
+        # Ensure non-zero standard deviation
+        min_std = cleaned_series['y'].std() * 0.1 if cleaned_series['y'].std() > 0 else 1.0
+        rolling_std = rolling_std.clip(lower=min_std)
+        
+        # Calculate z-scores
+        z_scores = (cleaned_series['y'] - rolling_median) / rolling_std
+        
+        # Only flag points with extremely high z-scores (truly exceptional points)
+        outliers_zscore = abs(z_scores) > threshold
+        
+        # Flag huge drops or spikes (80%+ change in a single month)
+        pct_changes = cleaned_series['y'].pct_change().fillna(0)
+        extreme_monthly_changes = abs(pct_changes) > 0.8
+        
+        # Combine outlier detection methods
+        outliers = np.zeros(len(cleaned_series), dtype=bool)
+        
+        # Convert extreme yearly ratios to boolean mask
+        for idx in extreme_yearly_ratios:
+            if idx < len(outliers):
+                outliers[idx] = True
+        
+        # Combine with other methods
+        outliers = outliers | outliers_zscore.values | extreme_monthly_changes.values
+        
+        # Only consider the focus window if specified
+        if focus_last_n < len(outliers):
+            focus_mask = np.zeros(len(outliers), dtype=bool)
+            focus_mask[-focus_last_n:] = True
+            outliers = outliers & focus_mask
+        
+        outlier_indices = np.where(outliers)[0]
+        
+        # Replace detected outliers with the rolling median
         if len(outlier_indices) > 0:
+            cleaned_series.loc[outliers, 'y'] = rolling_median[outliers]
+        
+            # Log detected outliers
             logger.info(f"Detected {len(outlier_indices)} outliers in series {time_series['unique_id'].iloc[0]}")
             for idx in outlier_indices:
                 if idx < len(time_series):
                     logger.info(f"Outlier at index {idx}: value={time_series['y'].iloc[idx]}, "
-                              f"date={time_series['ds'].iloc[idx]}")
-                    # Indicate if this outlier is in the focus window (last 60 points)
-                    if idx >= len(time_series) - focus_last_n:
-                        logger.info(f"  ^ This outlier is in the last {focus_last_n} points used for forecasting")
+                               f"date={time_series['ds'].iloc[idx]}, z-score={z_scores.iloc[idx]:.2f}")
         
         return cleaned_series, outlier_indices
     
@@ -466,8 +424,8 @@ def evaluate_model(
             # Save original data for plotting
             original_series_train = series_train.copy()
             
-            # Use a more sensitive threshold for outlier detection (2.5 instead of 3.0)
-            cleaned_series_train, outlier_indices = detect_and_clean_outliers(series_train, threshold=2.5)
+            # Use an extremely conservative threshold to detect only true anomalies
+            cleaned_series_train, outlier_indices = detect_and_clean_outliers(series_train, threshold=8.0)
             
             # Generate transformer forecast using cleaned data
             cleaned_series_train_indexed = cleaned_series_train.set_index('ds')
