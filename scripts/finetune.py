@@ -18,6 +18,7 @@ import psutil
 import re
 import subprocess
 import traceback
+from tqdm import tqdm
 
 # Add the project root directory to the Python path
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -346,86 +347,125 @@ def prepare_dataset(config: DataConfig, dataset_suffix: str) -> Tuple[tf.data.Da
     
     return train_dataset, val_dataset
 
-def finetune_model(
-    model: tf.keras.Model,
-    train_dataset: tf.data.Dataset,
-    val_dataset: tf.data.Dataset,
-    model_name: str,
-    epochs: int = 10,
-    learning_rate: float = 0.0001,
-    patience: int = 5,
-    callbacks: list = None,
-    args: Optional[argparse.Namespace] = None
-) -> tf.keras.Model:
+class MAPEMetric(tf.keras.metrics.Metric):
+    """Custom MAPE metric implementation."""
+    
+    def __init__(self, name='mape', **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.total = self.add_weight(name='total', initializer='zeros')
+        self.count = self.add_weight(name='count', initializer='zeros')
+    
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        epsilon = 1e-6
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+        
+        # Calculate percentage error
+        abs_difference = tf.abs(y_pred - y_true)
+        scale = tf.maximum(tf.abs(y_true), epsilon)
+        percentage_error = abs_difference / scale
+        
+        # Clip to avoid extreme values
+        percentage_error = tf.clip_by_value(percentage_error, 0.0, 1.0)
+        
+        # Update metric state
+        batch_mape = tf.reduce_mean(percentage_error) * 100.0
+        self.total.assign_add(batch_mape)
+        self.count.assign_add(1.0)
+    
+    def result(self):
+        return self.total / self.count
+    
+    def reset_state(self):
+        self.total.assign(0.0)
+        self.count.assign(0.0)
+
+def mape_loss(y_true, y_pred):
     """
-    Finetune the model on new data.
+    Mean Absolute Percentage Error (MAPE) loss function.
+    Handles zero values and scaling issues by:
+    1. Using a small epsilon to avoid division by zero
+    2. Clipping the error to avoid extreme values
+    3. Properly handling the percentage calculation
     
     Args:
-        model: TensorFlow model instance with pre-trained model
-        train_dataset: Training dataset
-        val_dataset: Validation dataset
-        model_name: Name to use for the finetuned model
-        epochs: Number of epochs to train
-        learning_rate: Learning rate for finetuning
-        patience: Patience for early stopping
-        callbacks: Additional callbacks
-        args: Command line arguments
+        y_true: Target values
+        y_pred: Predicted values
         
     Returns:
-        The finetuned model
+        MAPE loss value as a percentage (0-100 range)
     """
-    logger.info(f"Finetuning model with learning rate: {learning_rate}")
+    epsilon = 1e-6  # Slightly larger epsilon for better numerical stability
     
-    # Set up optimizer with reduced learning rate
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    # Ensure inputs are float32 for numerical stability
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
     
-    # Configure loss function
-    if args.loss_type:
-        if args.loss_type == 'gaussian_nll':
-            loss = tf.keras.losses.GaussianNLL()
-        elif args.loss_type == 'smape':
-            def smape_loss(y_true, y_pred):
-                epsilon = tf.keras.backend.epsilon()
-                summ = tf.abs(y_true) + tf.abs(y_pred) + epsilon
-                smape = 2.0 * tf.abs(y_pred - y_true) / summ
-                return 100.0 * tf.reduce_mean(smape)
-            loss = smape_loss
-        elif args.loss_type == 'hybrid':
-            if args.loss_alpha is None:
-                args.loss_alpha = 0.5
-            def hybrid_loss(y_true, y_pred):
-                mse = tf.keras.losses.mean_squared_error(y_true, y_pred)
-                smape = smape_loss(y_true, y_pred)
-                return args.loss_alpha * smape + (1 - args.loss_alpha) * mse
-            loss = hybrid_loss
-        else:
-            loss = 'mse'
+    # Calculate percentage error
+    abs_difference = tf.abs(y_pred - y_true)
+    scale = tf.maximum(tf.abs(y_true), epsilon)  # Avoid division by zero
+    percentage_error = abs_difference / scale
+    
+    # Clip to avoid extreme values (max 100% error per point)
+    percentage_error = tf.clip_by_value(percentage_error, 0.0, 1.0)
+    
+    # Calculate mean and convert to percentage
+    mape = tf.reduce_mean(percentage_error) * 100.0
+    
+    return mape
+
+def main():
+    """Main function to finetune the model."""
+    args = parse_args()
+    
+    # Load tourism dataset
+    X_train, y_train, X_val, y_val = load_tourism_dataset(args.dataset_suffix)
+    
+    # Set up GPU memory growth if needed
+    if not args.disable_memory_growth:
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+    
+    # Set memory limit if specified
+    if args.memory_limit and gpus:
+        tf.config.set_logical_device_configuration(
+            gpus[0],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=args.memory_limit)]
+        )
+    
+    # Enable mixed precision if requested
+    if args.mixed_precision:
+        tf.keras.mixed_precision.set_global_policy('mixed_float16')
+    
+    # Load pre-trained model
+    try:
+        model = tf.keras.models.load_model(args.pretrained_model)
+        logger.info(f"Loaded pre-trained model from {args.pretrained_model}")
+    except Exception as e:
+        logger.error(f"Error loading pre-trained model: {str(e)}")
+        sys.exit(1)
+    
+    # Freeze layers as specified
+    freeze_model_layers(model, args.freeze_layers)
+    
+    # Set up optimizer with new learning rate
+    optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
+    
+    # Configure loss function and metrics
+    if args.loss_type == 'mape':
+        loss = mape_loss
+        logger.info("Using MAPE loss function")
+        # For MAPE, we want to track both MSE and MAPE
+        metrics = [
+            tf.keras.metrics.MeanSquaredError(name='mse'),
+            MAPEMetric(name='mape')  # Use our custom MAPE metric
+        ]
     else:
-        # Try to infer loss from model name
-        model_name = Path(args.pretrained_model).stem.lower()
-        if 'gaussian' in model_name or 'nll' in model_name:
-            loss = tf.keras.losses.GaussianNLL()
-        elif 'smape' in model_name:
-            def smape_loss(y_true, y_pred):
-                epsilon = tf.keras.backend.epsilon()
-                summ = tf.abs(y_true) + tf.abs(y_pred) + epsilon
-                smape = 2.0 * tf.abs(y_pred - y_true) / summ
-                return 100.0 * tf.reduce_mean(smape)
-            loss = smape_loss
-        else:
-            # Default to MSE
-            loss = 'mse'
-    
-    # Set up metrics
-    metrics = ['mse']  # Always track MSE
-    if loss != 'mse':
-        # Add custom sMAPE metric
-        def smape_metric(y_true, y_pred):
-            epsilon = tf.keras.backend.epsilon()
-            summ = tf.abs(y_true) + tf.abs(y_pred) + epsilon
-            smape = 2.0 * tf.abs(y_pred - y_true) / summ
-            return 100.0 * tf.reduce_mean(smape)
-        metrics.append(smape_metric)
+        loss = 'mse'
+        logger.info("Using MSE loss function")
+        metrics = ['mse']  # Just track MSE for MSE loss
     
     # Compile model with new optimizer, loss and metrics
     model.compile(
@@ -437,113 +477,79 @@ def finetune_model(
     # Print model summary
     model.summary()
     
-    # Set up callbacks
-    if callbacks is None:
-        callbacks = []
-    
-    # Add early stopping callback
-    early_stopping = tf.keras.callbacks.EarlyStopping(
-        monitor='val_loss',
-        patience=patience,
-        mode='min',
-        restore_best_weights=True,
-        verbose=1
-    )
-    callbacks.append(early_stopping)
-    
-    # Add model checkpoint callback
-    checkpoint_dir = Path(ROOT_DIR) / "models" / "checkpoints" / f"{model_name}"
+    # Setup callbacks
+    model_name = Path(args.pretrained_model).stem
+    checkpoint_dir = Path('models/finetuned')
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
-    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-        filepath=str(checkpoint_dir / "checkpoint-{epoch:02d}-{val_loss:.4f}"),
-        monitor='val_loss',
-        save_best_only=True,
-        save_weights_only=True,
-        mode='min',
-        verbose=1
-    )
-    callbacks.append(checkpoint_callback)
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=args.patience,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(checkpoint_dir / f"finetuned_tourism_{model_name}_best"),
+            monitor='val_loss',
+            save_best_only=True,
+            save_weights_only=False,
+            verbose=1
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=args.patience // 2,
+            verbose=1
+        ),
+        tf.keras.callbacks.TensorBoard(
+            log_dir=f'logs/finetuning/{datetime.now().strftime("%Y%m%d-%H%M%S")}',
+            histogram_freq=1
+        )
+    ]
+
+    try:
+        history = model.fit(
+            X_train, y_train,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            validation_data=(X_val, y_val),
+            callbacks=callbacks,
+            verbose=1
+        )
+        
+        # Save final model weights instead of the full model
+        output_dir = Path('models/finetuned')
+        output_dir.mkdir(parents=True, exist_ok=True)
+        weights_path = output_dir / f"finetuned_tourism_{Path(args.pretrained_model).stem}_weights"
+        model.save_weights(weights_path)
+        logger.info(f"Finetuning completed successfully!")
+        logger.info(f"Model weights saved to: {weights_path}")
+        
+    except Exception as e:
+        logger.error(f"Error during finetuning: {str(e)}")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
     
-    # Add TensorBoard callback
-    log_dir = Path(ROOT_DIR) / "logs" / "finetuning" / f"{model_name}_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(
-        log_dir=str(log_dir),
-        histogram_freq=1,
-        write_graph=True,
-        update_freq='epoch'
-    )
-    callbacks.append(tensorboard_callback)
-    
-    # Add memory cleanup callback
-    memory_cleanup_callback = tf.keras.callbacks.LambdaCallback(
-        on_epoch_end=lambda epoch, logs: cleanup_memory(args)
-    )
-    callbacks.append(memory_cleanup_callback)
-    
-    # Finetune the model
-    logger.info("Starting finetuning...")
-    history = model.fit(
-        train_dataset,
-        validation_data=val_dataset,
-        epochs=epochs,
-        callbacks=callbacks,
-        verbose=1
-    )
-    
-    # Save the finetuned model
-    output_dir = Path(ROOT_DIR) / "models" / "final" / model_name
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save model weights
-    model.save_weights(str(output_dir / "model_weights"))
-    
-    # Save full model
-    model.save(str(output_dir))
-    
-    # Check model structure to determine properties
-    is_probabilistic = len(model.outputs[0].shape) > 1 and model.outputs[0].shape[-1] > 1
-    
-    # Try to determine input and output sequence lengths from model
-    input_seq_len = model.input_shape[1] if hasattr(model, 'input_shape') else None
-    output_seq_len = 1  # Default for most models
-    
-    # Save model configuration
-    config = {
-        "embedding_dim": 128,  # Default values, might not match actual model
-        "num_heads": 4,
-        "ff_dim": 2048,
-        "dropout_rate": 0.1,
-        "input_seq_len": input_seq_len,
-        "output_seq_len": output_seq_len,
-        "probabilistic": is_probabilistic,
-        "loss_type": "gaussian_nll" if is_probabilistic else "mse",
-        "finetuned_from": model_name.replace("_finetuned", "").replace("_tourism", ""),
-        "finetuning_date": datetime.now().strftime('%Y-%m-%d_%H-%M-%S'),
-        "learning_rate": learning_rate,
-        "epochs": epochs
-    }
-    
-    with open(output_dir / "config.json", 'w') as f:
-        json.dump(config, f, indent=4)
-    
-    # Save training history
-    with open(output_dir / "history.json", 'w') as f:
-        # Convert numpy values to Python native types for JSON serialization
-        history_dict = {}
-        for key, value in history.history.items():
-            history_dict[key] = [float(v) for v in value]
-        json.dump(history_dict, f, indent=4)
-    
-    # Print final metrics
-    final_loss = history.history['loss'][-1]
-    final_val_loss = history.history['val_loss'][-1]
-    
-    logger.info(f"Final Training Loss: {final_loss:.6f}")
-    logger.info(f"Final Validation Loss: {final_val_loss:.6f}")
-    logger.info(f"Finetuned model saved to {output_dir}")
-    
-    return model
+    finally:
+        # Cleanup if requested
+        if args.aggressive_cleanup:
+            import gc
+            gc.collect()
+            tf.keras.backend.clear_session()
+            
+        # Log final model information
+        try:
+            logger.info("\nFinal model summary:")
+            model.summary(print_fn=logger.info)
+            trainable_count = sum(layer.count_params() for layer in model.trainable_weights)
+            non_trainable_count = sum(layer.count_params() for layer in model.non_trainable_weights)
+            total_count = trainable_count + non_trainable_count
+            logger.info(f"\nTotal parameters: {total_count:,}")
+            logger.info(f"Trainable parameters: {trainable_count:,} ({trainable_count/total_count*100:.2f}%)")
+            logger.info(f"Non-trainable parameters: {non_trainable_count:,} ({non_trainable_count/total_count*100:.2f}%)")
+        except Exception as e:
+            logger.warning(f"Could not print final model information: {str(e)}")
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
@@ -606,14 +612,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--loss-type',
         type=str,
-        choices=['gaussian_nll', 'smape', 'hybrid', 'mse'],
-        help='Loss function to use (default: same as pretrained model)'
-    )
-    
-    parser.add_argument(
-        '--loss-alpha',
-        type=float,
-        help='Weight for sMAPE in hybrid loss (1-alpha for Gaussian NLL)'
+        choices=['mse', 'mape'],
+        default='mse',
+        help='Loss function to use for training (mse or mape)'
     )
     
     # Memory optimization parameters
@@ -641,7 +642,8 @@ def parse_args() -> argparse.Namespace:
         help='Perform aggressive memory cleanup between epochs'
     )
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    return args
 
 def load_tourism_dataset(dataset_suffix: str):
     """Load the processed tourism dataset."""
@@ -684,166 +686,6 @@ def freeze_model_layers(model, freeze_option: str):
             if 'attention' in layer.name.lower():
                 layer.trainable = False
 
-def main():
-    """Main function to finetune the model."""
-    args = parse_args()
-    
-    # Load tourism dataset
-    X_train, y_train, X_val, y_val = load_tourism_dataset(args.dataset_suffix)
-    
-    # Set up GPU memory growth if needed
-    if not args.disable_memory_growth:
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-    
-    # Set memory limit if specified
-    if args.memory_limit:
-        tf.config.set_logical_device_configuration(
-            gpus[0],
-            [tf.config.LogicalDeviceConfiguration(memory_limit=args.memory_limit)]
-        )
-    
-    # Enable mixed precision if requested
-    if args.mixed_precision:
-        tf.keras.mixed_precision.set_global_policy('mixed_float16')
-    
-    # Load pre-trained model
-    try:
-        model = tf.keras.models.load_model(args.pretrained_model)
-        logger.info(f"Loaded pre-trained model from {args.pretrained_model}")
-    except Exception as e:
-        logger.error(f"Error loading pre-trained model: {str(e)}")
-        sys.exit(1)
-    
-    # Freeze layers as specified
-    freeze_model_layers(model, args.freeze_layers)
-    
-    # Set up optimizer with new learning rate
-    optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
-    
-    # Configure loss function
-    if args.loss_type:
-        if args.loss_type == 'gaussian_nll':
-            loss = tf.keras.losses.GaussianNLL()
-        elif args.loss_type == 'smape':
-            def smape_loss(y_true, y_pred):
-                epsilon = tf.keras.backend.epsilon()
-                summ = tf.abs(y_true) + tf.abs(y_pred) + epsilon
-                smape = 2.0 * tf.abs(y_pred - y_true) / summ
-                return 100.0 * tf.reduce_mean(smape)
-            loss = smape_loss
-        elif args.loss_type == 'hybrid':
-            if args.loss_alpha is None:
-                args.loss_alpha = 0.5
-            def hybrid_loss(y_true, y_pred):
-                mse = tf.keras.losses.mean_squared_error(y_true, y_pred)
-                smape = smape_loss(y_true, y_pred)
-                return args.loss_alpha * smape + (1 - args.loss_alpha) * mse
-            loss = hybrid_loss
-        else:
-            loss = 'mse'
-    else:
-        # Try to infer loss from model name
-        model_name = Path(args.pretrained_model).stem.lower()
-        if 'gaussian' in model_name or 'nll' in model_name:
-            loss = tf.keras.losses.GaussianNLL()
-        elif 'smape' in model_name:
-            def smape_loss(y_true, y_pred):
-                epsilon = tf.keras.backend.epsilon()
-                summ = tf.abs(y_true) + tf.abs(y_pred) + epsilon
-                smape = 2.0 * tf.abs(y_pred - y_true) / summ
-                return 100.0 * tf.reduce_mean(smape)
-            loss = smape_loss
-        else:
-            # Default to MSE
-            loss = 'mse'
-    
-    # Set up metrics
-    metrics = ['mse']  # Always track MSE
-    if loss != 'mse':
-        # Add custom sMAPE metric
-        def smape_metric(y_true, y_pred):
-            epsilon = tf.keras.backend.epsilon()
-            summ = tf.abs(y_true) + tf.abs(y_pred) + epsilon
-            smape = 2.0 * tf.abs(y_pred - y_true) / summ
-            return 100.0 * tf.reduce_mean(smape)
-        metrics.append(smape_metric)
-    
-    # Compile model with new optimizer, loss and metrics
-    model.compile(
-        optimizer=optimizer,
-        loss=loss,
-        metrics=metrics
-    )
-    
-    # Print model summary
-    model.summary()
-    
-    # Setup callbacks
-    callbacks = [
-        tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=args.patience,
-            restore_best_weights=True,
-            verbose=1
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=args.patience // 2,
-            verbose=1
-        ),
-        tf.keras.callbacks.TensorBoard(
-            log_dir=f'logs/finetuning/{datetime.now().strftime("%Y%m%d-%H%M%S")}',
-            histogram_freq=1
-        )
-    ]
-
-    try:
-        history = model.fit(
-            X_train, y_train,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            validation_data=(X_val, y_val),
-            callbacks=callbacks,
-            verbose=1
-        )
-        
-        # Save final model weights instead of the full model
-        output_dir = Path('models/finetuned')
-        output_dir.mkdir(parents=True, exist_ok=True)
-        weights_path = output_dir / f"finetuned_tourism_{Path(args.pretrained_model).stem}_weights"
-        model.save_weights(weights_path)
-        logger.info(f"Finetuning completed successfully!")
-        logger.info(f"Model weights saved to: {weights_path}")
-        
-    except Exception as e:
-        logger.error(f"Error during finetuning: {str(e)}")
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-    
-    finally:
-        # Cleanup if requested
-        if args.aggressive_cleanup:
-            import gc
-            gc.collect()
-            tf.keras.backend.clear_session()
-            
-        # Log final model information
-        try:
-            logger.info("\nFinal model summary:")
-            model.summary(print_fn=logger.info)
-            trainable_count = sum(layer.count_params() for layer in model.trainable_weights)
-            non_trainable_count = sum(layer.count_params() for layer in model.non_trainable_weights)
-            total_count = trainable_count + non_trainable_count
-            logger.info(f"\nTotal parameters: {total_count:,}")
-            logger.info(f"Trainable parameters: {trainable_count:,} ({trainable_count/total_count*100:.2f}%)")
-            logger.info(f"Non-trainable parameters: {non_trainable_count:,} ({non_trainable_count/total_count*100:.2f}%)")
-        except Exception as e:
-            logger.warning(f"Could not print final model information: {str(e)}")
-
 if __name__ == "__main__":
     try:
         main()
@@ -851,4 +693,4 @@ if __name__ == "__main__":
         logger.error(f"Unhandled exception in main: {str(e)}")
         logger.error(f"Full error traceback:")
         logger.error(traceback.format_exc())
-        sys.exit(1) 
+        sys.exit(1)
