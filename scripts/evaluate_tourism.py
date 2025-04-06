@@ -103,6 +103,75 @@ def load_tourism_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     return train_df, test_df
 
 
+def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 2.5) -> Tuple[pd.DataFrame, np.ndarray]:
+    """Detect and replace outliers in a time series.
+    
+    Args:
+        time_series: DataFrame with 'ds' and 'y' columns
+        threshold: Z-score threshold to identify outliers (default: 2.5)
+    
+    Returns:
+        Tuple of (cleaned DataFrame with outliers replaced, numpy array of outlier indices)
+    """
+    try:
+        # Create a copy to avoid modifying the original data
+        cleaned_series = time_series.copy()
+        
+        # 1. Rolling window method - good for seasonal patterns
+        window_size = min(13, len(time_series) // 2)  # Use 1-year window (monthly data) or half the data if smaller
+        if window_size < 3:
+            window_size = 3  # Minimum window size
+        
+        # Calculate rolling statistics (centered)
+        rolling_median = cleaned_series['y'].rolling(window=window_size, center=True).median()
+        
+        # For the edges where rolling median produces NaN, use the nearest valid value
+        rolling_median = rolling_median.fillna(method='ffill').fillna(method='bfill')
+        
+        # Calculate z-scores
+        rolling_std = cleaned_series['y'].rolling(window=window_size, center=True).std()
+        rolling_std = rolling_std.fillna(method='ffill').fillna(method='bfill')
+        
+        # Avoid division by zero
+        rolling_std = rolling_std.replace(0, cleaned_series['y'].std() if cleaned_series['y'].std() > 0 else 1)
+        
+        # Calculate z-scores
+        z_scores = (cleaned_series['y'] - rolling_median) / rolling_std
+        
+        # 2. Specific detection for extreme drops
+        # Look at percentage changes (will be very sensitive to large drops)
+        pct_changes = cleaned_series['y'].pct_change().fillna(0)
+        
+        # Flag any point with more than 30% drop as a potential outlier
+        extreme_drops = abs(pct_changes) > 0.3
+        
+        # 3. Combined detection
+        # Identify outliers using z-score threshold
+        outliers_zscore = abs(z_scores) > threshold
+        
+        # Combine with extreme drops
+        outliers = outliers_zscore | extreme_drops
+        
+        outlier_indices = np.where(outliers)[0]
+        
+        # Log outliers detected
+        if len(outlier_indices) > 0:
+            logger.info(f"Detected {len(outlier_indices)} outliers in series {time_series['unique_id'].iloc[0]}")
+            for idx in outlier_indices:
+                logger.info(f"Outlier at index {idx}: value={time_series['y'].iloc[idx]}, "
+                           f"date={time_series['ds'].iloc[idx]}, z-score={z_scores.iloc[idx]:.2f}")
+        
+        # Replace outliers with local median
+        cleaned_series.loc[outliers, 'y'] = rolling_median[outliers]
+        
+        return cleaned_series, outlier_indices
+    
+    except Exception as e:
+        logger.error(f"Error in outlier detection: {type(e).__name__}: {e}")
+        # Return original series and empty outlier list on error
+        return time_series.copy(), np.array([])
+
+
 def plot_forecast(
     series_id: str,
     train_df: pd.DataFrame,
@@ -111,13 +180,22 @@ def plot_forecast(
     nbeats_forecast_60: pd.DataFrame,
     nbeats_forecast_full: pd.DataFrame,
     naive2_forecast: np.ndarray,
-    model_name: str
+    model_name: str,
+    outlier_indices: np.ndarray = None
 ) -> None:
     """Plot and save forecast for a single series."""
     plt.figure(figsize=(12, 6))
     
     # Plot training data
     plt.plot(train_df['ds'], train_df['y'], 'b-', label='Training', alpha=0.7)
+    
+    # Highlight outliers with red markers if provided
+    if outlier_indices is not None and len(outlier_indices) > 0:
+        plt.scatter(
+            train_df['ds'].iloc[outlier_indices], 
+            train_df['y'].iloc[outlier_indices],
+            color='red', s=80, marker='o', label='Outliers', zorder=10
+        )
     
     # Highlight the last 60 points used for prediction
     if len(train_df) >= 60:
@@ -304,20 +382,26 @@ def evaluate_model(
             series_train = train_df[train_df['unique_id'] == series_id]
             series_test = test_df[test_df['unique_id'] == series_id]
             
-            # Generate transformer forecast
-            series_train_indexed = series_train.set_index('ds')
+            # Save original data for plotting
+            original_series_train = series_train.copy()
+            
+            # Use a more sensitive threshold for outlier detection (2.5 instead of 3.0)
+            cleaned_series_train, outlier_indices = detect_and_clean_outliers(series_train, threshold=2.5)
+            
+            # Generate transformer forecast using cleaned data
+            cleaned_series_train_indexed = cleaned_series_train.set_index('ds')
             forecast = model.predict(
-                series_df=series_train_indexed,
+                series_df=cleaned_series_train_indexed,
                 n=forecast_horizon
             )
             
             # Generate NBEATS forecasts - both 60-point and full history versions
-            nbeats_forecast_60 = generate_nbeats_forecast(series_train, forecast_horizon, use_full_history=False)
-            nbeats_forecast_full = generate_nbeats_forecast(series_train, forecast_horizon, use_full_history=True)
+            nbeats_forecast_60 = generate_nbeats_forecast(cleaned_series_train, forecast_horizon, use_full_history=False)
+            nbeats_forecast_full = generate_nbeats_forecast(cleaned_series_train, forecast_horizon, use_full_history=True)
             
-            # Generate Naive2 forecast
+            # Generate Naive2 forecast from cleaned data
             naive2_forecast = calculate_naive2_forecast(
-                values=series_train['y'].values,
+                values=cleaned_series_train['y'].values,
                 horizon=forecast_horizon
             )
             
@@ -378,9 +462,13 @@ def evaluate_model(
             nbeats_full_metrics = calculate_metrics(actual_values, nbeats_forecast_full[nbeats_column_full].values)
             naive2_metrics = calculate_metrics(actual_values, naive2_forecast)
             
+            # Add information about number of outliers detected
+            outlier_count = len(outlier_indices) if outlier_indices is not None else 0
+            
             # Store results with proper column names
             results.append({
                 'series_id': series_id,
+                'outliers_count': outlier_count,
                 'transformer_mae': transformer_metrics['mae'],
                 'transformer_mape': transformer_metrics['mape'],
                 'transformer_smape': transformer_metrics['smape'],
@@ -399,23 +487,27 @@ def evaluate_model(
                 'naive2_rmse': naive2_metrics['rmse']
             })
             
-            # Plot results
+            # Plot results using original data for visualization
             plot_forecast(
                 series_id=series_id,
-                train_df=series_train,
+                train_df=original_series_train,  # Use original data for plotting
                 test_df=series_test,
                 forecast=forecast,
                 nbeats_forecast_60=nbeats_forecast_60,
                 nbeats_forecast_full=nbeats_forecast_full,
                 naive2_forecast=naive2_forecast,
-                model_name=model_name
+                model_name=model_name,
+                outlier_indices=outlier_indices
             )
             
         except Exception as e:
-            logger.error(f"Error processing series {series_id}: {str(e)}")
+            # Convert exception to string to handle any type of error object
+            error_message = f"{type(e).__name__}: {e}"
+            logger.error(f"Error processing series {series_id}: {error_message}")
             # Add empty results to maintain DataFrame structure
             results.append({
                 'series_id': series_id,
+                'outliers_count': 0,
                 'transformer_mae': np.nan,
                 'transformer_mape': np.nan,
                 'transformer_smape': np.nan,
@@ -470,14 +562,33 @@ def evaluate_model(
     }
     summary_df = pd.DataFrame(summary_stats)
     
+    # Create outlier summary
+    total_outliers = results_df['outliers_count'].sum()
+    series_with_outliers = results_df[results_df['outliers_count'] > 0].shape[0]
+    max_outliers = results_df['outliers_count'].max()
+    avg_outliers = results_df['outliers_count'].mean()
+    
+    outlier_summary = pd.DataFrame({
+        'Metric': ['Total Outliers', 'Series with Outliers', 'Max Outliers per Series', 'Avg Outliers per Series'],
+        'Value': [total_outliers, series_with_outliers, max_outliers, avg_outliers]
+    })
+    
     # Save both detailed and summary results
     with pd.ExcelWriter(excel_path) as writer:
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        outlier_summary.to_excel(writer, sheet_name='Outlier Summary', index=False)
         results_df.to_excel(writer, sheet_name='Detailed', index=False)
     
     logger.info(f"Results saved to {excel_path}")
     logger.info("\nSummary Statistics:")
     logger.info(f"Number of series evaluated: {len(results_df)}")
+    
+    logger.info("\nOutlier Statistics:")
+    logger.info(f"Total outliers detected: {total_outliers}")
+    logger.info(f"Series with outliers: {series_with_outliers} ({series_with_outliers/len(results_df)*100:.1f}%)")
+    logger.info(f"Maximum outliers in a single series: {max_outliers}")
+    logger.info(f"Average outliers per series: {avg_outliers:.2f}")
+    
     logger.info("\nMean MAPE:")
     logger.info(f"Transformer: {results_df['transformer_mape'].mean():.2f}%")
     logger.info(f"NBEATS (60 points): {results_df['nbeats_60_mape'].mean():.2f}%")
