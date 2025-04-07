@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
+import time
 
 import numpy as np
 import pandas as pd
@@ -103,114 +104,6 @@ def load_tourism_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     return train_df, test_df
 
 
-def detect_and_clean_outliers(time_series: pd.DataFrame, threshold: float = 8.0, focus_last_n: int = 60) -> Tuple[pd.DataFrame, np.ndarray]:
-    """Detect and replace outliers in a time series.
-    
-    Args:
-        time_series: DataFrame with 'ds' and 'y' columns
-        threshold: Z-score threshold to identify outliers (default: 8.0)
-        focus_last_n: Focus outlier detection on the last N points (default: 60)
-        
-    Returns:
-        Tuple of (cleaned DataFrame with outliers replaced, numpy array of outlier indices)
-    """
-    try:
-        # Create a copy to avoid modifying the original data
-        cleaned_series = time_series.copy()
-        
-        # A seasonal pattern is normal in tourism data
-        # Only flag extremely unusual values (like drops to near zero or massive irregular spikes)
-        
-        # Calculate year-over-year ratios where possible (tourism data is often seasonal)
-        # This helps detect when a value is extreme compared to the same month in previous years
-        if len(cleaned_series) >= 12:
-            # Calculate the ratio to the same month in the previous year
-            monthly_values = cleaned_series['y'].values
-            yearly_ratios = []
-            for i in range(12, len(monthly_values)):
-                yearly_ratios.append(monthly_values[i] / max(monthly_values[i-12], 1.0))  # Avoid division by zero
-            
-            # Pad the beginning where we couldn't calculate ratios
-            yearly_ratios = [1.0] * 12 + yearly_ratios
-            
-            # Identify extreme ratios (more than 2x increase or less than 50% of previous year)
-            extreme_yearly_ratios = []
-            for i in range(len(yearly_ratios)):
-                ratio = yearly_ratios[i]
-                if ratio > 2.0 or ratio < 0.5:
-                    # Only flag if it's not part of a consistent pattern
-                    if i >= 24:
-                        # Check if this is a recurring pattern (seasonal changes can be large but consistent)
-                        prev_ratio = yearly_ratios[i-12]
-                        if abs(ratio - prev_ratio) > 0.5:  # If ratio differs by more than 50% from previous year's ratio
-                            extreme_yearly_ratios.append(i)
-                    else:
-                        extreme_yearly_ratios.append(i)
-        else:
-            extreme_yearly_ratios = []
-        
-        # Calculate rolling median and std with a very large window (global approach)
-        window_size = min(len(cleaned_series) // 4, 24)  # Use up to 2 years of data, but at least 25% of time series
-        window_size = max(window_size, 5)  # Ensure at least 5 points for statistics
-            
-        rolling_median = cleaned_series['y'].rolling(window=window_size, center=True).median()
-        rolling_median = rolling_median.fillna(method='ffill').fillna(method='bfill')
-        
-        rolling_std = cleaned_series['y'].rolling(window=window_size, center=True).std()
-        rolling_std = rolling_std.fillna(method='ffill').fillna(method='bfill')
-        
-        # Ensure non-zero standard deviation
-        min_std = cleaned_series['y'].std() * 0.1 if cleaned_series['y'].std() > 0 else 1.0
-        rolling_std = rolling_std.clip(lower=min_std)
-        
-        # Calculate z-scores
-        z_scores = (cleaned_series['y'] - rolling_median) / rolling_std
-        
-        # Only flag points with extremely high z-scores (truly exceptional points)
-        outliers_zscore = abs(z_scores) > threshold
-        
-        # Flag huge drops or spikes (80%+ change in a single month)
-        pct_changes = cleaned_series['y'].pct_change().fillna(0)
-        extreme_monthly_changes = abs(pct_changes) > 0.8
-        
-        # Combine outlier detection methods
-        outliers = np.zeros(len(cleaned_series), dtype=bool)
-        
-        # Convert extreme yearly ratios to boolean mask
-        for idx in extreme_yearly_ratios:
-            if idx < len(outliers):
-                outliers[idx] = True
-        
-        # Combine with other methods
-        outliers = outliers | outliers_zscore.values | extreme_monthly_changes.values
-        
-        # Only consider the focus window if specified
-        if focus_last_n < len(outliers):
-            focus_mask = np.zeros(len(outliers), dtype=bool)
-            focus_mask[-focus_last_n:] = True
-            outliers = outliers & focus_mask
-        
-        outlier_indices = np.where(outliers)[0]
-        
-        # Replace detected outliers with the rolling median
-        if len(outlier_indices) > 0:
-            cleaned_series.loc[outliers, 'y'] = rolling_median[outliers]
-        
-            # Log detected outliers
-            logger.info(f"Detected {len(outlier_indices)} outliers in series {time_series['unique_id'].iloc[0]}")
-            for idx in outlier_indices:
-                if idx < len(time_series):
-                    logger.info(f"Outlier at index {idx}: value={time_series['y'].iloc[idx]}, "
-                               f"date={time_series['ds'].iloc[idx]}, z-score={z_scores.iloc[idx]:.2f}")
-        
-        return cleaned_series, outlier_indices
-    
-    except Exception as e:
-        logger.error(f"Error in outlier detection: {type(e).__name__}: {e}")
-        # Return original series and empty outlier list on error
-        return time_series.copy(), np.array([])
-
-
 def plot_forecast(
     series_id: str,
     train_df: pd.DataFrame,
@@ -220,7 +113,6 @@ def plot_forecast(
     nbeats_forecast_full: pd.DataFrame,
     naive2_forecast: np.ndarray,
     model_name: str,
-    outlier_indices: np.ndarray = None,
     was_log_transformed: bool = False
 ) -> None:
     """Plot and save forecast for a single series."""
@@ -228,14 +120,6 @@ def plot_forecast(
     
     # Plot training data
     plt.plot(train_df['ds'], train_df['y'], 'b-', label='Training', alpha=0.7)
-    
-    # Highlight outliers with red markers if provided
-    if outlier_indices is not None and len(outlier_indices) > 0:
-        plt.scatter(
-            train_df['ds'].iloc[outlier_indices], 
-            train_df['y'].iloc[outlier_indices],
-            color='red', s=80, marker='o', label='Outliers', zorder=10
-        )
     
     # Highlight the last 60 points used for prediction
     if len(train_df) >= 60:
@@ -499,6 +383,9 @@ def evaluate_model(
     logger.info(f"Loading model {model_name}")
     model = TransformerModel(model_name=model_name)
     
+    # Start timing
+    start_time = time.time()
+    
     # Filter for specific series if provided
     if specific_series:
         if specific_series not in series_ids:
@@ -509,8 +396,12 @@ def evaluate_model(
     # Prepare results storage
     results = []
     
+    # Create output directory
+    os.makedirs("evaluation/tourism", exist_ok=True)
+    excel_path = f"evaluation/tourism/{model_name}_evaluation.xlsx"
+    
     # Process each series
-    for series_id in tqdm(series_ids, desc="Evaluating series"):
+    for series_idx, series_id in enumerate(tqdm(series_ids, desc="Evaluating series")):
         try:
             # Get series data
             series_train = train_df[train_df['unique_id'] == series_id]
@@ -519,17 +410,14 @@ def evaluate_model(
             # Save original data for plotting
             original_series_train = series_train.copy()
             
-            # Use an extremely conservative threshold to detect only true anomalies
-            cleaned_series_train, outlier_indices = detect_and_clean_outliers(series_train, threshold=8.0)
-            
             # Check if log transformation is needed for Transformer (based on variance pattern)
-            needs_log_transform = should_log_transform(cleaned_series_train)
+            needs_log_transform = should_log_transform(series_train)
             was_transformed = False
             
             # Generate transformer forecast using cleaned data (with log transform if needed)
             if needs_log_transform:
                 logger.info(f"Applying log transform for series {series_id} (Transformer model only)")
-                transformed_series, was_transformed = apply_log_transform(cleaned_series_train)
+                transformed_series, was_transformed = apply_log_transform(series_train)
                 transformed_series_indexed = transformed_series.set_index('ds')
                 
                 # Generate forecast in log space
@@ -548,20 +436,20 @@ def evaluate_model(
             else:
                 # No transformation needed
                 logger.info(f"No log transform needed for series {series_id}")
-                cleaned_series_train_indexed = cleaned_series_train.set_index('ds')
+                series_train_indexed = series_train.set_index('ds')
                 forecast = model.predict(
-                    series_df=cleaned_series_train_indexed,
+                    series_df=series_train_indexed,
                     n=forecast_horizon
                 )
             
             # Generate NBEATS forecasts - both 60-point and full history versions
             # (No log transform for NBEATS as requested)
-            nbeats_forecast_60 = generate_nbeats_forecast(cleaned_series_train, forecast_horizon, use_full_history=False)
-            nbeats_forecast_full = generate_nbeats_forecast(cleaned_series_train, forecast_horizon, use_full_history=True)
+            nbeats_forecast_60 = generate_nbeats_forecast(series_train, forecast_horizon, use_full_history=False)
+            nbeats_forecast_full = generate_nbeats_forecast(series_train, forecast_horizon, use_full_history=True)
             
             # Generate Naive2 forecast from cleaned data (no log transform)
             naive2_forecast = calculate_naive2_forecast(
-                values=cleaned_series_train['y'].values,
+                values=series_train['y'].values,
                 horizon=forecast_horizon
             )
             
@@ -622,13 +510,9 @@ def evaluate_model(
             nbeats_full_metrics = calculate_metrics(actual_values, nbeats_forecast_full[nbeats_column_full].values)
             naive2_metrics = calculate_metrics(actual_values, naive2_forecast)
             
-            # Add information about number of outliers detected and log transform status
-            outlier_count = len(outlier_indices) if outlier_indices is not None else 0
-            
             # Store results with proper column names
             results.append({
                 'series_id': series_id,
-                'outliers_count': outlier_count,
                 'log_transformed': was_transformed,
                 'transformer_mae': transformer_metrics['mae'],
                 'transformer_mape': transformer_metrics['mape'],
@@ -648,6 +532,55 @@ def evaluate_model(
                 'naive2_rmse': naive2_metrics['rmse']
             })
             
+            # Update Excel after each series
+            current_results_df = pd.DataFrame(results)
+            # Calculate summary statistics
+            current_summary_stats = {
+                'Metric': ['MAPE', 'SMAPE', 'MAE', 'RMSE'],
+                'Transformer': [
+                    current_results_df['transformer_mape'].mean(),
+                    current_results_df['transformer_smape'].mean(),
+                    current_results_df['transformer_mae'].mean(),
+                    current_results_df['transformer_rmse'].mean()
+                ],
+                'NBEATS (60 points)': [
+                    current_results_df['nbeats_60_mape'].mean(),
+                    current_results_df['nbeats_60_smape'].mean(),
+                    current_results_df['nbeats_60_mae'].mean(),
+                    current_results_df['nbeats_60_rmse'].mean()
+                ],
+                'NBEATS (full history)': [
+                    current_results_df['nbeats_full_mape'].mean(),
+                    current_results_df['nbeats_full_smape'].mean(),
+                    current_results_df['nbeats_full_mae'].mean(),
+                    current_results_df['nbeats_full_rmse'].mean()
+                ],
+                'Naive2': [
+                    current_results_df['naive2_mape'].mean(),
+                    current_results_df['naive2_smape'].mean(),
+                    current_results_df['naive2_mae'].mean(),
+                    current_results_df['naive2_rmse'].mean()
+                ]
+            }
+            current_summary_df = pd.DataFrame(current_summary_stats)
+            
+            # Add progress info
+            current_progress_info = pd.DataFrame({
+                'Info': ['Last Series Processed', 'Remaining Series', 'Estimated Time Left'],
+                'Value': [series_id, len(series_ids) - (series_idx + 1), 
+                          f"~{(len(series_ids) - (series_idx + 1)) * (series_idx > 0 and (time.time() - start_time) / (series_idx + 1) / 60):.1f} min" 
+                          if series_idx > 0 else "Calculating..."]
+            })
+            
+            # Save both detailed and summary results
+            with pd.ExcelWriter(excel_path) as writer:
+                current_summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                current_progress_info.to_excel(writer, sheet_name='Progress', index=False)
+                current_results_df.to_excel(writer, sheet_name='Detailed', index=False)
+            
+            # Log progress
+            logger.info(f"Completed {series_idx+1}/{len(series_ids)} series ({(series_idx+1)/len(series_ids)*100:.1f}%)")
+            
             # Plot results using original data for visualization
             plot_forecast(
                 series_id=series_id,
@@ -658,7 +591,6 @@ def evaluate_model(
                 nbeats_forecast_full=nbeats_forecast_full,
                 naive2_forecast=naive2_forecast,
                 model_name=model_name,
-                outlier_indices=outlier_indices,
                 was_log_transformed=was_transformed
             )
                 
@@ -669,7 +601,6 @@ def evaluate_model(
             # Add empty results to maintain DataFrame structure
             results.append({
                 'series_id': series_id,
-                'outliers_count': 0,
                 'log_transformed': False,
                 'transformer_mae': np.nan,
                 'transformer_mape': np.nan,
@@ -688,12 +619,20 @@ def evaluate_model(
                 'naive2_smape': np.nan,
                 'naive2_rmse': np.nan
             })
+            
+            # Still update Excel file even on error
+            try:
+                current_results_df = pd.DataFrame(results)
+                with pd.ExcelWriter(excel_path) as writer:
+                    current_results_df.to_excel(writer, sheet_name='Detailed', index=False)
+                    pd.DataFrame({'Error': [error_message]}).to_excel(writer, sheet_name='Errors', index=False)
+            except Exception as excel_error:
+                logger.error(f"Failed to update Excel file after error: {excel_error}")
+            
             continue
     
-    # Save results to Excel
+    # Final save at the end (this is redundant now but kept for safety)
     results_df = pd.DataFrame(results)
-    os.makedirs("evaluation/tourism", exist_ok=True)
-    excel_path = f"evaluation/tourism/{model_name}_evaluation.xlsx"
     
     # Calculate summary statistics
     summary_stats = {
@@ -725,32 +664,14 @@ def evaluate_model(
     }
     summary_df = pd.DataFrame(summary_stats)
     
-    # Create outlier summary
-    total_outliers = results_df['outliers_count'].sum()
-    series_with_outliers = results_df[results_df['outliers_count'] > 0].shape[0]
-    max_outliers = results_df['outliers_count'].max()
-    avg_outliers = results_df['outliers_count'].mean()
-    
-    outlier_summary = pd.DataFrame({
-        'Metric': ['Total Outliers', 'Series with Outliers', 'Max Outliers per Series', 'Avg Outliers per Series'],
-        'Value': [total_outliers, series_with_outliers, max_outliers, avg_outliers]
-    })
-    
-    # Save both detailed and summary results
+    # Final save to Excel
     with pd.ExcelWriter(excel_path) as writer:
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
-        outlier_summary.to_excel(writer, sheet_name='Outlier Summary', index=False)
         results_df.to_excel(writer, sheet_name='Detailed', index=False)
     
     logger.info(f"Results saved to {excel_path}")
     logger.info("\nSummary Statistics:")
     logger.info(f"Number of series evaluated: {len(results_df)}")
-    
-    logger.info("\nOutlier Statistics:")
-    logger.info(f"Total outliers detected: {total_outliers}")
-    logger.info(f"Series with outliers: {series_with_outliers} ({series_with_outliers/len(results_df)*100:.1f}%)")
-    logger.info(f"Maximum outliers in a single series: {max_outliers}")
-    logger.info(f"Average outliers per series: {avg_outliers:.2f}")
     
     logger.info("\nMean MAPE:")
     logger.info(f"Transformer: {results_df['transformer_mape'].mean():.2f}%")
