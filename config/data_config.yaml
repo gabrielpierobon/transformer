@@ -3,8 +3,14 @@ train_data_path: "data/raw/Monthly-train.csv"
 test_data_path: "data/raw/Monthly-test.csv"
 processed_data_path: "data/processed"
 
+# Tourism data paths
+tourism_train_data_path: "data/processed/tourism_monthly_dataset.csv"
+tourism_test_data_path: "data/processed/tourism_monthly_test.csv"
+
 # Sequence parameters
 extension: 61  # Sequence length
+input_seq_len: 60  # Input sequence length for tourism data
+output_seq_len: 24  # Output sequence length (forecast horizon) for tourism data
 batch_size: 16  # Reduced from 32 to help with memory usage
 random_seed: 42
 
@@ -20,4 +26,4 @@ detrending:
 
 # Data type configuration
 dtype:
-  precision: "float16"  # Options: "float16", "float32" 
+  precision: "float32"  # Changed to float32 for tourism dataset for better precision 

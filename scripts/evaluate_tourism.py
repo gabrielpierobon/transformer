@@ -1,29 +1,25 @@
 #!/usr/bin/env python
 """
 Script to evaluate the transformer model on the Tourism monthly dataset.
-
-This script:
-1. Loads the Tourism training and test data
-2. Generates forecasts for each series
-3. Compares forecasts with actual values from the test set
-4. Calculates performance metrics (MAE, MAPE, SMAPE, etc.) following the methodology in the paper
-5. Saves results to CSV files in the evaluation/tourism/ directory
 """
 
 import argparse
 import logging
 import os
 import sys
-import random
 import time
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import pytorch_lightning as pl
+from neuralforecast import NeuralForecast
+from neuralforecast.models import NBEATS
+from neuralforecast.losses.pytorch import DistributionLoss, MAE, MAPE
+from neuralforecast.tsdataset import TimeSeriesDataset
 
 # Add project root to Python path
 project_root = str(Path(__file__).resolve().parents[1])
@@ -40,259 +36,289 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def calculate_smape(actual: np.ndarray, predicted: np.ndarray) -> float:
-    """
-    Calculate Symmetric Mean Absolute Percentage Error (SMAPE).
-    
-    Formula: SMAPE = (100%/n) * sum(|predicted - actual| / ((|actual| + |predicted|) / 2))
-    
-    Args:
-        actual: Array of actual values
-        predicted: Array of predicted values
-        
-    Returns:
-        SMAPE value as a percentage
-    """
-    # Calculate denominator
-    denominator = (np.abs(actual) + np.abs(predicted)) / 2
-    
-    # Create mask for valid values (denominator > 0)
-    mask = denominator > 0
-    
-    # Calculate SMAPE if there are valid values
-    if np.any(mask):
-        return np.mean(np.abs(predicted[mask] - actual[mask]) / denominator[mask]) * 100
-    else:
-        return np.nan
-
-
 def calculate_mape(actual: np.ndarray, predicted: np.ndarray) -> float:
-    """
-    Calculate Mean Absolute Percentage Error (MAPE).
-    
-    Formula: MAPE = (100%/n) * sum(|predicted - actual| / |actual|)
-    
-    Args:
-        actual: Array of actual values
-        predicted: Array of predicted values
-        
-    Returns:
-        MAPE value as a percentage
-    """
-    # Avoid division by zero by only including non-zero actual values
+    """Calculate Mean Absolute Percentage Error."""
     non_zero_mask = actual != 0
-    
     if np.any(non_zero_mask):
         return np.mean(np.abs((actual[non_zero_mask] - predicted[non_zero_mask]) / actual[non_zero_mask])) * 100
-    else:
-        return np.nan
+    return np.nan
 
 
-def calculate_mase(actual: np.ndarray, predicted: np.ndarray, history: np.ndarray, seasonality: int = 12) -> float:
-    """
-    Calculate Mean Absolute Scaled Error (MASE).
-    
-    MASE = MAE / MAE_naive
-    MAE_naive is calculated using the seasonal naive forecast (t-m)
-    
-    Args:
-        actual: Array of actual values
-        predicted: Array of predicted values
-        history: Historical values used for calculating the naïve forecast denominator
-        seasonality: Seasonality period (12 for monthly data)
-        
-    Returns:
-        MASE value
-    """
-    mae = np.mean(np.abs(predicted - actual))
-    
-    if len(history) <= seasonality:
-        # Not enough history for seasonal naïve
-        naive_errors = np.abs(np.diff(history))
-    else:
-        # Calculate errors for the seasonal naïve forecast
-        naive_predictions = history[:-seasonality]
-        naive_actual = history[seasonality:]
-        naive_errors = np.abs(naive_predictions - naive_actual)
-    
-    # Avoid division by zero
-    if len(naive_errors) == 0 or np.mean(naive_errors) == 0:
-        return np.nan
-    
-    return mae / np.mean(naive_errors)
+def calculate_smape(actual: np.ndarray, predicted: np.ndarray) -> float:
+    """Calculate Symmetric Mean Absolute Percentage Error."""
+    denominator = (np.abs(actual) + np.abs(predicted)) / 2
+    mask = denominator > 0
+    if np.any(mask):
+        return np.mean(np.abs(predicted[mask] - actual[mask]) / denominator[mask]) * 100
+    return np.nan
 
 
-def calculate_metrics(
-    actual: np.ndarray, 
-    predicted: np.ndarray, 
-    series_id: str, 
-    horizon: int,
-    history: np.ndarray = None
-) -> Dict[str, float]:
-    """
-    Calculate various error metrics for a forecast.
-    
-    Args:
-        actual: Array of actual values
-        predicted: Array of predicted values (must be same length as actual)
-        series_id: Identifier for the series
-        horizon: Forecast horizon
-        history: Historical values (for MASE calculation)
-        
-    Returns:
-        Dictionary containing error metrics
-    """
-    # Ensure arrays are same length
+def calculate_naive2_forecast(values: np.ndarray, horizon: int) -> np.ndarray:
+    """Generate Naive2 forecast (average of last 2 observations)."""
+    if len(values) < 2:
+        return np.repeat(values[-1], horizon)
+    return np.repeat(np.mean(values[-2:]), horizon)
+
+
+def calculate_metrics(actual: np.ndarray, predicted: np.ndarray) -> Dict[str, float]:
+    """Calculate various error metrics."""
     min_len = min(len(actual), len(predicted))
     actual = actual[:min_len]
     predicted = predicted[:min_len]
     
-    # Handle empty arrays
     if min_len == 0:
         return {
-            'series_id': series_id,
-            'horizon': horizon,
             'mae': np.nan,
             'mape': np.nan,
             'smape': np.nan,
-            'rmse': np.nan,
-            'wmape': np.nan,
-            'mase': np.nan
+            'rmse': np.nan
         }
     
-    # Calculate MAE
     mae = np.mean(np.abs(predicted - actual))
-    
-    # Calculate MAPE
     mape = calculate_mape(actual, predicted)
-    
-    # Calculate SMAPE
     smape = calculate_smape(actual, predicted)
-    
-    # Calculate RMSE
     rmse = np.sqrt(np.mean((predicted - actual) ** 2))
     
-    # Calculate WMAPE (Weighted MAPE)
-    wmape = np.sum(np.abs(predicted - actual)) / np.sum(np.abs(actual)) * 100 if np.sum(np.abs(actual)) > 0 else np.nan
-    
-    # Calculate MASE
-    mase = np.nan
-    if history is not None and len(history) > 0:
-        mase = calculate_mase(actual, predicted, history, seasonality=12)
-    
     return {
-        'series_id': series_id,
-        'horizon': horizon,
         'mae': mae,
         'mape': mape,
         'smape': smape,
-        'rmse': rmse,
-        'wmape': wmape,
-        'mase': mase
+        'rmse': rmse
     }
 
 
-def setup_directories() -> None:
-    """Create necessary directories for evaluation results."""
-    os.makedirs("evaluation/tourism", exist_ok=True)
-    os.makedirs("evaluation/tourism/plots", exist_ok=True)
-    logger.info("Created evaluation directories")
-
-
 def load_tourism_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Load Tourism training and test data.
-    
-    Returns:
-        Tuple of (train_df, test_df)
-    """
+    """Load Tourism training and test data."""
     train_path = Path("data/processed/tourism_monthly_dataset.csv")
     test_path = Path("data/processed/tourism_monthly_test.csv")
     
     if not train_path.exists() or not test_path.exists():
         raise FileNotFoundError(
-            "Tourism data files not found. Please run convert_tourism_tsf_to_csv.py first."
+            "Tourism data files not found. Please run create_tourism_dataset.py first."
         )
     
     train_df = pd.read_csv(train_path, parse_dates=['ds'])
     test_df = pd.read_csv(test_path, parse_dates=['ds'])
     
-    logger.info(f"Loaded {len(train_df)} training data points")
-    logger.info(f"Loaded {len(test_df)} test data points")
-    
-    # Count unique series
-    train_series_count = train_df['unique_id'].nunique()
-    test_series_count = test_df['unique_id'].nunique()
-    
-    logger.info(f"Training data contains {train_series_count} unique series")
-    logger.info(f"Test data contains {test_series_count} unique series")
+    logger.info(f"Loaded {len(train_df)} training records")
+    logger.info(f"Loaded {len(test_df)} test records")
     
     return train_df, test_df
 
 
-def sample_series(train_df: pd.DataFrame, test_df: pd.DataFrame, sample_size: int, random_seed: int = 42) -> Tuple[List[str], pd.DataFrame, pd.DataFrame]:
-    """
-    Randomly sample series from the dataset.
+def train_global_nbeats_model(train_df: pd.DataFrame, forecast_horizon: int) -> NeuralForecast:
+    """Train a global NBEATS model on all series at once.
     
     Args:
-        train_df: Training data DataFrame
-        test_df: Test data DataFrame
-        sample_size: Number of series to sample
-        random_seed: Random seed for reproducibility
+        train_df: DataFrame with 'unique_id', 'ds', and 'y' columns for all series
+        forecast_horizon: Number of steps to forecast
         
     Returns:
-        Tuple of (sampled_series_ids, sampled_train_df, sampled_test_df)
+        Trained NeuralForecast model with NBEATS
     """
-    random.seed(random_seed)
+    logger.info("Training global NBEATS model on all series...")
     
-    # Get all unique series IDs
-    all_series_ids = train_df['unique_id'].unique().tolist()
+    # Initialize NBEATS model with early stopping
+    nbeats_model = NBEATS(
+        h=forecast_horizon,             # Forecast horizon
+        input_size=60,                  # Keep input window size at 60
+        max_steps=3000,                 # Maximum number of training steps
+        early_stop_patience_steps=50,   # Stop after 10 validation steps without improvement
+        val_check_steps=100,             # Check validation every 20 steps
+        learning_rate=0.0001,            # Learning rate
+        loss=MAPE(),                    # Use MAPE loss
+        #loss=MAE(),                     # Use MAE loss
+        random_seed=42                  # For reproducibility
+    )
     
-    # Ensure we only include series that exist in both train and test sets
-    test_series_ids = set(test_df['unique_id'].unique())
-    valid_series_ids = [s_id for s_id in all_series_ids if s_id in test_series_ids]
+    # Create NeuralForecast model
+    nf = NeuralForecast(
+        models=[nbeats_model],
+        freq='M'  # Monthly frequency
+    )
     
-    logger.info(f"Found {len(valid_series_ids)} series that exist in both train and test sets")
+    try:
+        # Train the model with early stopping
+        nf.fit(df=train_df, val_size=24)  # Use 24 months (2 years) for validation
+        #nf.fit(df=train_df)
+        logger.info("Global NBEATS model training complete")
+        return nf
+    except Exception as e:
+        logger.error(f"Error training global NBEATS model: {str(e)}")
+        raise
+
+
+def plot_forecast(
+    series_id: str,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    forecast: pd.DataFrame,
+    nbeats_forecast: pd.DataFrame,
+    naive2_forecast: np.ndarray,
+    model_name: str,
+    was_log_transformed: bool = False
+) -> None:
+    """Plot and save forecast for a single series."""
+    plt.figure(figsize=(12, 6))
     
-    # Sample series IDs
-    if sample_size >= len(valid_series_ids):
-        sampled_ids = valid_series_ids
-        logger.warning(
-            f"Sample size {sample_size} is larger than available series "
-            f"({len(valid_series_ids)}). Using all series."
+    # Plot training data
+    plt.plot(train_df['ds'], train_df['y'], 'b-', label='Training', alpha=0.7)
+    
+    # Highlight the last 60 points used for prediction
+    if len(train_df) >= 60:
+        inference_data = train_df.iloc[-60:]
+        plt.plot(inference_data['ds'], inference_data['y'], 'b-', alpha=1.0)
+        plt.axvspan(
+            inference_data['ds'].iloc[0],
+            inference_data['ds'].iloc[-1],
+            color='lightblue',
+            alpha=0.3,
+            label='Last 60 Points'
         )
-    else:
-        sampled_ids = random.sample(valid_series_ids, sample_size)
     
-    # Filter dataframes to only include sampled series
-    sampled_train_df = train_df[train_df['unique_id'].isin(sampled_ids)]
-    sampled_test_df = test_df[test_df['unique_id'].isin(sampled_ids)]
+    # Plot actuals from test set
+    actuals = []
+    for date in forecast['ds']:
+        date_str = pd.to_datetime(date)
+        matching_rows = test_df[test_df['ds'] == date_str]
+        if not matching_rows.empty:
+            actuals.append((date_str, matching_rows.iloc[0]['y']))
     
-    logger.info(f"Sampled {len(sampled_ids)} series for evaluation")
+    if actuals:
+        dates, values = zip(*actuals)
+        plt.plot(dates, values, 'g-', label='Actual', linewidth=2.5)
     
-    return sampled_ids, sampled_train_df, sampled_test_df
+    # Plot Transformer forecast
+    transformer_label = 'Transformer'
+    if was_log_transformed:
+        transformer_label += ' (log transformed)'
+    plt.plot(forecast['ds'], forecast['q_0.5'], 'r--', label=transformer_label, linewidth=1.5)
+    
+    # Plot NBEATS forecast if available
+    if nbeats_forecast is not None and not nbeats_forecast.empty:
+        nbeats_column = None
+        
+        # Try to find a usable column for NBEATS forecast
+        if 'NBEATS' in nbeats_forecast.columns:
+            nbeats_column = 'NBEATS'
+        else:
+            # Look for any numeric column that's not ds or unique_id
+            for col in nbeats_forecast.columns:
+                if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast[col]):
+                    nbeats_column = col
+                    break
+        
+        # Only plot if we found a usable column
+        if nbeats_column is not None:
+            plt.plot(nbeats_forecast['ds'], nbeats_forecast[nbeats_column], 'c--', 
+                    label='NBEATS (global)', linewidth=1.5)
+    
+    # Plot Naive2 forecast
+    forecast_dates = [pd.to_datetime(d) for d in forecast['ds']]
+    plt.plot(forecast_dates, naive2_forecast, 'k:', label='Naive2', linewidth=1.5)
+    
+    # Add a vertical line to separate train and test
+    if len(train_df) > 0:
+        last_train_date = train_df['ds'].iloc[-1]
+        plt.axvline(x=last_train_date, color='gray', linestyle='--', linewidth=1.5)
+    
+    # Add grid, title, and labels
+    plt.grid(True, alpha=0.3)
+    plt.title(f'Series: {series_id}' + (' (Log Transformed)' if was_log_transformed else ''), fontsize=16)
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('Value', fontsize=12)
+    plt.legend(loc='upper left')
+    
+    # Adjust layout and save the plot
+    plt.tight_layout()
+    plot_dir = Path(f"evaluation/tourism/plots/{model_name}")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(plot_dir / f"{series_id}.png")
+    plt.close()
 
 
-def calculate_naive2_forecast(series: np.ndarray, forecast_horizon: int) -> np.ndarray:
-    """
-    Generate Naive2 forecasts (average of last 2 observations)
+def should_log_transform(series: pd.DataFrame, inference_window: int = 60) -> bool:
+    """Determine if the series should be log-transformed based on increasing variance in inference window.
     
     Args:
-        series: Array of historical values
-        forecast_horizon: Number of periods to forecast
+        series: DataFrame with 'ds' and 'y' columns
+        inference_window: Number of recent points to analyze (default: 60)
         
     Returns:
-        Array of forecasts
+        Boolean indicating whether log transformation should be applied
     """
-    if len(series) < 2:
-        # Fall back to Naive if not enough data
-        return np.repeat(series[-1], forecast_horizon)
+    # Make sure we have enough data for the test
+    if len(series) < inference_window or inference_window < 10:
+        return False
     
-    # Average last 2 observations
-    last_value = np.mean(series[-2:])
+    # Get the last inference_window points
+    y_values = series['y'].values[-inference_window:]
     
-    # Repeat for the forecast horizon
-    return np.repeat(last_value, forecast_horizon)
+    # Check 1: Test for variance increase using first half vs second half of the window
+    half_size = inference_window // 2
+    first_half_std = np.std(y_values[:half_size])
+    second_half_std = np.std(y_values[half_size:])
+    
+    # Calculate variance ratio
+    variance_ratio = second_half_std / first_half_std if first_half_std > 0 else 1.0
+    
+    # Check 2: Test correlation between level and volatility
+    indices = np.arange(len(y_values))
+    rolling_std = pd.Series(y_values).rolling(window=5).std().fillna(method='bfill')
+    level_vol_corr = np.corrcoef(y_values, rolling_std)[0, 1]
+    
+    # Check 3: Test if data increases in magnitude significantly
+    first_quarter_mean = np.mean(y_values[:inference_window//4]) if inference_window >= 4 else np.mean(y_values[:5])
+    last_quarter_mean = np.mean(y_values[-inference_window//4:]) if inference_window >= 4 else np.mean(y_values[-5:])
+    level_increase_ratio = last_quarter_mean / first_quarter_mean if first_quarter_mean > 0 else 1.0
+    
+    # Check 4: Check range ratio (max/min) to detect high amplitude seasonality
+    range_ratio = np.max(y_values) / np.min(y_values) if np.min(y_values) > 0 else 1.0
+    
+    # Check 5: Calculate coefficient of variation (CV) to measure relative dispersion
+    cv = np.std(y_values) / np.mean(y_values) if np.mean(y_values) > 0 else 0
+    
+    # Decision rule: Apply log transform if:
+    # 1. Strong correlation between level and volatility (primary indicator)
+    # 2. Either variance is increasing OR level is increasing OR range is wide OR CV is high
+    logger.info(f"Variance test results - Ratio: {variance_ratio:.2f}, Level-Vol Corr: {level_vol_corr:.2f}, " +
+                f"Level Increase: {level_increase_ratio:.2f}, Range Ratio: {range_ratio:.2f}, CV: {cv:.2f}")
+    
+    should_transform = (
+        level_vol_corr > 0.3 and  # Strong correlation between level and volatility
+        (
+            variance_ratio > 1.1 or  # Slightly increasing variance (reduced threshold)
+            level_increase_ratio > 1.05 or  # Slightly increasing level (reduced threshold)
+            range_ratio > 2.5 or  # Wide range between min and max values
+            cv > 0.3  # High coefficient of variation
+        )
+    )
+    
+    if should_transform:
+        logger.info(f"Log transform recommended for series based on: " +
+                    f"Level-Vol Corr={level_vol_corr:.2f}, CV={cv:.2f}, Range Ratio={range_ratio:.2f}")
+    
+    return should_transform
+
+
+def apply_log_transform(series: pd.DataFrame) -> Tuple[pd.DataFrame, bool]:
+    """Apply log transformation to series if positive.
+    
+    Args:
+        series: DataFrame with 'ds' and 'y' columns
+        
+    Returns:
+        Tuple of (transformed DataFrame, was_transformed flag)
+    """
+    # Check if all values are positive (required for log transform)
+    if np.all(series['y'] > 0):
+        transformed = series.copy()
+        transformed['y'] = np.log(transformed['y'])
+        return transformed, True
+    else:
+        # Log warning that log transform couldn't be applied due to non-positive values
+        logger.warning("Log transform not applied: series contains zero or negative values")
+        return series.copy(), False
 
 
 def evaluate_model(
@@ -300,511 +326,367 @@ def evaluate_model(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     series_ids: List[str],
-    forecast_horizon: int,
-    input_length: int,
-    random_seed: int,
-    log_transform: bool = False,
-    include_naive2: bool = False
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Evaluate the model on the sampled series.
+    forecast_horizon: int = 24,
+    specific_series: str = None
+) -> None:
+    """Evaluate the model on tourism data using global forecasting approach."""
+    # Initialize transformer model
+    logger.info(f"Loading transformer model {model_name}")
+    transformer_model = TransformerModel(model_name=model_name)
     
-    Args:
-        model_name: Name of the model to evaluate
-        train_df: DataFrame with training data
-        test_df: DataFrame with test data
-        series_ids: List of series IDs to evaluate
-        forecast_horizon: Number of periods to forecast
-        input_length: Length of input sequence for the model
-        random_seed: Random seed for reproducibility
-        log_transform: Whether to apply log transformation to the data
-        include_naive2: Whether to include Naive2 benchmark (averaging last 2 values)
-        
-    Returns:
-        Tuple of DataFrames with detailed and summary results
-    """
-    # Set random seed
-    random.seed(random_seed)
-    np.random.seed(random_seed)
+    # Start timing
+    start_time = time.time()
     
-    # Initialize model
-    logger.info(f"Initializing model {model_name}")
-    model = TransformerModel(model_name=model_name)
+    # Filter for specific series if provided
+    if specific_series:
+        if specific_series not in series_ids:
+            raise ValueError(f"Series {specific_series} not found in dataset")
+        series_to_evaluate = [specific_series]
+        logger.info(f"Evaluating only series {specific_series}")
+    else:
+        series_to_evaluate = series_ids
+        logger.info(f"Evaluating {len(series_to_evaluate)} series")
     
-    # Prepare results dataframes
-    detailed_results = []
-    naive2_results = [] if include_naive2 else None
+    # Filter the train and test dataframes to include only the series we're evaluating
+    filtered_train_df = train_df[train_df['unique_id'].isin(series_to_evaluate)]
+    filtered_test_df = test_df[test_df['unique_id'].isin(series_to_evaluate)]
     
-    # Store original data for metrics calculation if using log transform
-    original_train_df = train_df.copy() if log_transform else None
-    original_test_df = test_df.copy() if log_transform else None
+    # Report on the data we're using
+    logger.info(f"Using {len(filtered_train_df)} training records and {len(filtered_test_df)} test records")
     
-    # Apply log transformation if requested
-    if log_transform:
-        logger.info("Applying log transformation to the data")
-        train_df = log_transform_series(train_df)
-        test_df = log_transform_series(test_df)
+    # Prepare results storage
+    results = []
     
-    # Process each series
-    for i, series_id in enumerate(tqdm(series_ids, desc="Evaluating series")):
-        # Extract series data
-        series_train = train_df[train_df['unique_id'] == series_id].copy()
-        series_test = test_df[test_df['unique_id'] == series_id].copy()
-        
-        # Skip if not enough data
-        if len(series_train) < input_length:
-            logger.warning(f"Series {series_id} has insufficient data ({len(series_train)} < {input_length}), skipping")
-            continue
-        
-        # Generate forecast
+    # Create output directory
+    os.makedirs("evaluation/tourism", exist_ok=True)
+    excel_path = f"evaluation/tourism/{model_name}_evaluation.xlsx"
+    
+    # Train global NBEATS model on all series at once
+    global_nbeats_model = None
+    try:
+        global_nbeats_model = train_global_nbeats_model(filtered_train_df, forecast_horizon)
+        logger.info("Global NBEATS model training complete")
+    except Exception as e:
+        logger.error(f"Failed to train global NBEATS model: {str(e)}")
+        logger.warning("Will proceed with evaluation using only Transformer and Naive2 models")
+    
+    # Process each series for transformer model and naive2 forecasts
+    for series_idx, series_id in enumerate(tqdm(series_to_evaluate, desc="Evaluating series")):
         try:
-            # Convert 'ds' column to datetime if it's not already
-            series_train['ds'] = pd.to_datetime(series_train['ds'])
+            # Get series data
+            series_train = filtered_train_df[filtered_train_df['unique_id'] == series_id]
+            series_test = filtered_test_df[filtered_test_df['unique_id'] == series_id]
             
-            # Set the 'ds' column as the index before passing to the model
-            series_train_indexed = series_train.set_index('ds')
-            
-            forecast = model.predict(
-                series_df=series_train_indexed,
-                n=forecast_horizon
-            )
-            
-            # Apply inverse transformation if log transform was used
-            if log_transform:
-                forecast['q_0.5'] = inverse_log_transform(forecast['q_0.5'].values)
+            if len(series_train) == 0:
+                logger.warning(f"No training data found for series {series_id}, skipping")
+                continue
                 
-                # Get original scale data for metrics calculation
-                series_test_orig = original_test_df[original_test_df['unique_id'] == series_id].copy()
+            if len(series_test) == 0:
+                logger.warning(f"No test data found for series {series_id}, skipping")
+                continue
             
-            # Extract actual values from test set
-            actual_values = []
-            actual_dates = []
-            for date in forecast['ds']:
-                date_str = pd.to_datetime(date)
-                actual_dates.append(date_str)
-                matching_rows = series_test if not log_transform else series_test_orig
-                matching_rows = matching_rows[matching_rows['ds'] == date_str]
-                if not matching_rows.empty:
-                    actual_values.append(matching_rows['y'].values[0])
-                else:
-                    actual_values.append(np.nan)
+            # Save original data for plotting
+            original_series_train = series_train.copy()
             
-            # Calculate metrics for transformer model
-            forecast_values = forecast['q_0.5'].values
-            metrics = calculate_metrics(
-                actual=np.array(actual_values),
-                predicted=forecast_values,
-                series_id=series_id,
-                horizon=forecast_horizon,
-                history=series_train['y'].values
-            )
-            detailed_results.append(metrics)
+            # Check if log transformation is needed for Transformer (based on variance pattern)
+            needs_log_transform = should_log_transform(series_train)
+            was_transformed = False
             
-            # Calculate Naive2 benchmark if requested
-            if include_naive2:
-                # Use last 2 observations to calculate Naive2 forecast
-                train_series = series_train['y'].values
-                naive2_forecast = calculate_naive2_forecast(train_series, forecast_horizon)
+            # Generate transformer forecast
+            if needs_log_transform:
+                logger.info(f"Applying log transform for series {series_id} (Transformer model only)")
+                transformed_series, was_transformed = apply_log_transform(series_train)
+                transformed_series_indexed = transformed_series.set_index('ds')
                 
-                # Apply inverse transformation if log transform was used
-                if log_transform:
-                    naive2_forecast = inverse_log_transform(naive2_forecast)
-                
-                # Calculate metrics for Naive2
-                naive2_metrics = calculate_metrics(
-                    actual=np.array(actual_values),
-                    predicted=naive2_forecast,
-                    series_id=series_id,
-                    horizon=forecast_horizon,
-                    history=series_train['y'].values
+                # Generate forecast in log space
+                log_forecast = transformer_model.predict(
+                    series_df=transformed_series_indexed,
+                    n=forecast_horizon
                 )
-                naive2_metrics['method'] = 'naive2'
-                naive2_results.append(naive2_metrics)
+                
+                # Back-transform forecast
+                if was_transformed:
+                    for col in log_forecast.columns:
+                        if col != 'ds' and pd.api.types.is_numeric_dtype(log_forecast[col]):
+                            log_forecast[col] = np.exp(log_forecast[col])
+                
+                forecast = log_forecast
+            else:
+                # No transformation needed
+                logger.info(f"No log transform needed for series {series_id}")
+                series_train_indexed = series_train.set_index('ds')
+                forecast = transformer_model.predict(
+                    series_df=series_train_indexed,
+                    n=forecast_horizon
+                )
             
-            # Plot forecast for every series
-            plot_series_forecast(
-                series_id=series_id,
-                train_df=original_train_df if log_transform else train_df,
-                test_df=original_test_df if log_transform else test_df,
-                forecast=forecast,
-                model_name=model_name,
-                naive2_forecast=naive2_forecast if include_naive2 else None,
-                actual_dates=actual_dates if include_naive2 else None
+            # Generate Naive2 forecast
+            naive2_forecast = calculate_naive2_forecast(
+                values=series_train['y'].values,
+                horizon=forecast_horizon
             )
+            
+            # Store the results for this series
+            results.append({
+                'series_id': series_id,
+                'log_transformed': was_transformed,
+                'transformer_forecast': forecast,
+                'naive2_forecast': naive2_forecast,
+                'actual_values': series_test
+            })
+            
+            # Log progress
+            logger.info(f"Completed Transformer & Naive2 for series {series_idx+1}/{len(series_to_evaluate)} ({(series_idx+1)/len(series_to_evaluate)*100:.1f}%)")
                 
         except Exception as e:
-            logger.error(f"Error processing series {series_id}: {str(e)}")
+            # Convert exception to string to handle any type of error object
+            error_message = f"{type(e).__name__}: {e}"
+            logger.error(f"Error processing series {series_id}: {error_message}")
             continue
     
-    # Convert detailed results to DataFrame
-    detailed_df = pd.DataFrame(detailed_results)
-    
-    # Add Naive2 results if included
-    if include_naive2:
-        naive2_df = pd.DataFrame(naive2_results)
-        detailed_df['method'] = 'transformer'
-        combined_df = pd.concat([detailed_df, naive2_df])
-    else:
-        combined_df = detailed_df
-    
-    # Calculate summary metrics
-    summary_metrics = {}
-    
-    # Group by method if Naive2 is included
-    if include_naive2:
-        for method in ['transformer', 'naive2']:
-            method_df = combined_df[combined_df['method'] == method]
-            method_prefix = f"{method}_"
-            for metric in ['mae', 'mape', 'smape', 'rmse', 'wmape', 'mase']:
-                if metric in method_df.columns:
-                    # Calculate mean
-                    mean_value = method_df[metric].mean()
-                    # Calculate median
-                    median_value = method_df[metric].median()
-                    # Store in summary dict
-                    summary_metrics[f'{method_prefix}mean_{metric}'] = mean_value
-                    summary_metrics[f'{method_prefix}median_{metric}'] = median_value
-    else:
-        for metric in ['mae', 'mape', 'smape', 'rmse', 'wmape', 'mase']:
-            if metric in combined_df.columns:
-                # Calculate mean
-                mean_value = combined_df[metric].mean()
-                # Calculate median
-                median_value = combined_df[metric].median()
-                # Store in summary dict
-                summary_metrics[f'mean_{metric}'] = mean_value
-                summary_metrics[f'median_{metric}'] = median_value
-    
-    # Convert summary metrics to DataFrame
-    summary_df = pd.DataFrame([summary_metrics])
-    
-    return combined_df, summary_df
-
-
-def plot_series_forecast(
-    series_id: str,
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    forecast: pd.DataFrame,
-    model_name: str,
-    naive2_forecast: np.ndarray = None,
-    actual_dates: List[datetime] = None
-) -> None:
-    """
-    Plot the forecast for a single series.
-    
-    Args:
-        series_id: Identifier for the series
-        train_df: DataFrame with training data
-        test_df: DataFrame with test data
-        forecast: DataFrame with forecast data
-        model_name: Name of the model used
-        naive2_forecast: Optional array with Naive2 forecasts
-        actual_dates: Optional list of datetime objects for the forecast dates
-    """
-    # Filter data for this series
-    series_train = train_df[train_df['unique_id'] == series_id].copy()
-    series_test = test_df[test_df['unique_id'] == series_id].copy()
-    
-    # Convert dates to datetime if needed
-    series_train['ds'] = pd.to_datetime(series_train['ds'])
-    series_test['ds'] = pd.to_datetime(series_test['ds'])
-    forecast['ds'] = pd.to_datetime(forecast['ds'])
-    
-    # Create plot
-    plt.figure(figsize=(12, 6))
-    
-    # Plot training data
-    plt.plot(series_train['ds'], series_train['y'], 'b-', label='Training')
-    
-    # Plot test data
-    plt.plot(series_test['ds'], series_test['y'], 'g-', label='Actual')
-    
-    # Plot forecast
-    plt.plot(forecast['ds'], forecast['q_0.5'], 'r--', label='Transformer Forecast')
-    
-    # Plot Naive2 forecast if provided
-    if naive2_forecast is not None and actual_dates is not None:
-        plt.plot(actual_dates, naive2_forecast, 'm:', label='Naive2 Forecast')
-    
-    # Add vertical line at the end of training data
-    if not series_train.empty:
-        last_train_date = series_train['ds'].max()
-        plt.axvline(x=last_train_date, color='k', linestyle='--', alpha=0.5)
-    
-    # Add labels
-    plt.title(f'Series: {series_id}')
-    plt.xlabel('Date')
-    plt.ylabel('Value')
-    plt.legend()
-    plt.grid(True)
-    
-    # Save plot
-    plot_path = f"evaluation/tourism/plots/{model_name}_{series_id}.png"
-    plt.savefig(plot_path)
-    plt.close()
-
-
-def log_transform_series(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply natural log transformation to the 'y' column of the DataFrame.
-    
-    Args:
-        df: DataFrame with 'y' column to transform
-        
-    Returns:
-        DataFrame with transformed 'y' column
-    """
-    # Create a copy to avoid modifying the original
-    transformed_df = df.copy()
-    
-    # Apply natural log transformation (adding a small constant to avoid log(0))
-    transformed_df['y'] = np.log1p(transformed_df['y'])
-    
-    logger.info("Applied log transformation to 'y' values")
-    return transformed_df
-
-
-def inverse_log_transform(values: np.ndarray) -> np.ndarray:
-    """
-    Apply inverse log transformation to an array of values.
-    
-    Args:
-        values: Array of log-transformed values
-        
-    Returns:
-        Array of values in original scale
-    """
-    # Apply expm1 (inverse of log1p)
-    return np.expm1(values)
-
-
-def save_results(
-    detailed_df: pd.DataFrame,
-    summary_df: pd.DataFrame,
-    model_name: str,
-    sample_size: int,
-    include_naive2: bool = False
-) -> None:
-    """
-    Save evaluation results to CSV files.
-    
-    Args:
-        detailed_df: DataFrame with detailed results for each series
-        summary_df: DataFrame with summary metrics
-        model_name: Name of the model used for evaluation
-        sample_size: Number of series sampled for evaluation
-        include_naive2: Whether Naive2 benchmark was included
-    """
-    # Create timestamp for filenames
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    
-    # Save detailed results
-    detailed_path = f"evaluation/tourism/{model_name}_{sample_size}series_detailed_{timestamp}.csv"
-    detailed_df.to_csv(detailed_path, index=False)
-    logger.info(f"Saved detailed results to {detailed_path}")
-    
-    # Calculate the weighted average MAPE as done in the paper
-    # Equation (6): MAPE_Average = (N_Year/N_Tot * MAPE_Year + N_Quart/N_Tot * MAPE_Quart + N_Month/N_Tot * MAPE_Month)
-    # Since we're only using monthly data, this simplifies to just the monthly MAPE
-    
-    if include_naive2:
-        transformer_df = detailed_df[detailed_df['method'] == 'transformer']
-        naive2_df = detailed_df[detailed_df['method'] == 'naive2']
-        
-        if 'mape' in transformer_df.columns and 'mape' in naive2_df.columns:
-            transformer_mape = transformer_df['mape'].mean()
-            naive2_mape = naive2_df['mape'].mean()
-            improvement = (naive2_mape - transformer_mape) / naive2_mape * 100 if naive2_mape > 0 else 0
+    # Generate global NBEATS forecasts for all series at once
+    nbeats_forecasts = {}
+    if global_nbeats_model is not None:
+        try:
+            # Generate forecasts for all series at once
+            all_nbeats_forecasts = predict_global_nbeats(global_nbeats_model, filtered_train_df)
             
-            logger.info(f"TOURISM Monthly MAPE - Transformer (366 series, 24 horizon): {transformer_mape:.2f}")
-            logger.info(f"TOURISM Monthly MAPE - Naive2 (366 series, 24 horizon): {naive2_mape:.2f}")
-            logger.info(f"Improvement over Naive2: {improvement:.2f}%")
-    else:
-        if 'mape' in detailed_df.columns:
-            monthly_mape = detailed_df['mape'].mean()
-            logger.info(f"TOURISM Monthly MAPE (366 series, 24 horizon): {monthly_mape:.2f}")
+            # Extract forecasts for each series
+            for series_id in series_to_evaluate:
+                series_forecast = all_nbeats_forecasts[all_nbeats_forecasts['unique_id'] == series_id]
+                if len(series_forecast) > 0:
+                    nbeats_forecasts[series_id] = series_forecast
+                else:
+                    logger.warning(f"No NBEATS forecast generated for series {series_id}")
+                    
+            logger.info(f"Generated NBEATS forecasts for {len(nbeats_forecasts)} series")
+        except Exception as e:
+            logger.error(f"Error generating global NBEATS forecasts: {str(e)}")
     
-    # Save summary results
-    summary_path = f"evaluation/tourism/{model_name}_{sample_size}series_summary_{timestamp}.csv"
-    summary_df.to_csv(summary_path, index=False)
-    logger.info(f"Saved summary results to {summary_path}")
+    # Calculate metrics and generate plots for all models
+    final_results = []
+    for result in results:
+        series_id = result['series_id']
+        transformer_forecast = result['transformer_forecast']
+        naive2_forecast = result['naive2_forecast']
+        actual_values_df = result['actual_values']
+        was_transformed = result['log_transformed']
+        
+        # Extract actual values as array
+        actual_values = []
+        for date in transformer_forecast['ds']:
+            date_str = pd.to_datetime(date)
+            matching_rows = actual_values_df[actual_values_df['ds'] == date_str]
+            if not matching_rows.empty:
+                actual_values.append(matching_rows.iloc[0]['y'])
+            else:
+                actual_values.append(np.nan)
+        actual_values = np.array(actual_values)
+        
+        # Get NBEATS forecast for this series if available
+        nbeats_forecast = None
+        if series_id in nbeats_forecasts:
+            nbeats_forecast = nbeats_forecasts[series_id]
+            nbeats_column = None
+            if 'NBEATS' in nbeats_forecast.columns:
+                nbeats_column = 'NBEATS'
+            else:
+                for col in nbeats_forecast.columns:
+                    if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast[col]):
+                        nbeats_column = col
+                        break
+            
+            if nbeats_column is not None:
+                nbeats_metrics = calculate_metrics(actual_values, nbeats_forecast[nbeats_column].values)
+            else:
+                logger.warning(f"No NBEATS forecast column found for series {series_id}")
+                nbeats_metrics = {
+                    'mae': np.nan,
+                    'mape': np.nan,
+                    'smape': np.nan,
+                    'rmse': np.nan
+                }
+        else:
+            nbeats_metrics = {
+                'mae': np.nan,
+                'mape': np.nan,
+                'smape': np.nan,
+                'rmse': np.nan
+            }
+        
+        # Calculate metrics for transformer and naive2
+        transformer_metrics = calculate_metrics(actual_values, transformer_forecast['q_0.5'].values)
+        naive2_metrics = calculate_metrics(actual_values, naive2_forecast)
+        
+        # Store results
+        final_results.append({
+            'series_id': series_id,
+            'log_transformed': was_transformed,
+            'transformer_mae': transformer_metrics['mae'],
+            'transformer_mape': transformer_metrics['mape'],
+            'transformer_smape': transformer_metrics['smape'],
+            'transformer_rmse': transformer_metrics['rmse'],
+            'nbeats_mae': nbeats_metrics['mae'],
+            'nbeats_mape': nbeats_metrics['mape'],
+            'nbeats_smape': nbeats_metrics['smape'],
+            'nbeats_rmse': nbeats_metrics['rmse'],
+            'naive2_mae': naive2_metrics['mae'],
+            'naive2_mape': naive2_metrics['mape'],
+            'naive2_smape': naive2_metrics['smape'],
+            'naive2_rmse': naive2_metrics['rmse']
+        })
+        
+        # Plot results
+        series_train = filtered_train_df[filtered_train_df['unique_id'] == series_id]
+        if series_id in nbeats_forecasts:
+            plot_forecast(
+                series_id=series_id,
+                train_df=series_train,
+                test_df=actual_values_df,
+                forecast=transformer_forecast,
+                nbeats_forecast=nbeats_forecasts[series_id],
+                naive2_forecast=naive2_forecast,
+                model_name=model_name,
+                was_log_transformed=was_transformed
+            )
     
-    # Also save as Excel for easier viewing
-    excel_path = f"evaluation/tourism/{model_name}_{sample_size}series_results_{timestamp}.xlsx"
+    # Create final results DataFrame
+    results_df = pd.DataFrame(final_results)
+    
+    # Calculate summary statistics
+    summary_stats = {
+        'Metric': ['MAPE', 'SMAPE', 'MAE', 'RMSE'],
+        'Transformer': [
+            results_df['transformer_mape'].mean(),
+            results_df['transformer_smape'].mean(),
+            results_df['transformer_mae'].mean(),
+            results_df['transformer_rmse'].mean()
+        ],
+        'NBEATS (global)': [
+            results_df['nbeats_mape'].mean(),
+            results_df['nbeats_smape'].mean(),
+            results_df['nbeats_mae'].mean(),
+            results_df['nbeats_rmse'].mean()
+        ],
+        'Naive2': [
+            results_df['naive2_mape'].mean(),
+            results_df['naive2_smape'].mean(),
+            results_df['naive2_mae'].mean(),
+            results_df['naive2_rmse'].mean()
+        ]
+    }
+    summary_df = pd.DataFrame(summary_stats)
+    
+    # Save results to Excel
     with pd.ExcelWriter(excel_path) as writer:
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
-        detailed_df.to_excel(writer, sheet_name='Detailed', index=False)
-    logger.info(f"Saved combined results to {excel_path}")
+        results_df.to_excel(writer, sheet_name='Detailed', index=False)
+    
+    logger.info(f"Results saved to {excel_path}")
+    
+    # Log summary statistics
+    logger.info("\nSummary Statistics:")
+    logger.info(f"Number of series evaluated: {len(results_df)}")
+    
+    logger.info("\nMean MAPE:")
+    logger.info(f"Transformer: {results_df['transformer_mape'].mean():.2f}%")
+    logger.info(f"NBEATS (global): {results_df['nbeats_mape'].mean():.2f}%")
+    logger.info(f"Naive2: {results_df['naive2_mape'].mean():.2f}%")
+    logger.info("\nMean SMAPE:")
+    logger.info(f"Transformer: {results_df['transformer_smape'].mean():.2f}%")
+    logger.info(f"NBEATS (global): {results_df['nbeats_smape'].mean():.2f}%")
+    logger.info(f"Naive2: {results_df['naive2_smape'].mean():.2f}%")
 
 
-def plot_summary_metrics(
-    summary_df: pd.DataFrame, 
-    model_name: str, 
-    sample_size: int,
-    include_naive2: bool = False
-) -> None:
-    """
-    Create bar plots of summary metrics.
+def predict_global_nbeats(model: NeuralForecast, test_series: pd.DataFrame) -> pd.DataFrame:
+    """Generate forecasts for all series at once using the global NBEATS model.
     
     Args:
-        summary_df: DataFrame with summary metrics
-        model_name: Name of the model used for evaluation
-        sample_size: Number of series sampled for evaluation
-        include_naive2: Whether Naive2 benchmark was included
+        model: Trained NeuralForecast model
+        test_series: DataFrame containing all test series
+        
+    Returns:
+        DataFrame with forecasts for all series
     """
-    # Create timestamp for filenames
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    logger.info("Generating forecasts using global NBEATS model...")
     
-    if include_naive2:
-        # Create comparison plots between transformer and Naive2
-        metrics = ['mape', 'smape', 'rmse', 'mae', 'wmape', 'mase']
-        display_names = ['MAPE', 'SMAPE', 'RMSE', 'MAE', 'WMAPE', 'MASE']
-        
-        for metric, display_name in zip(metrics, display_names):
-            transformer_mean = summary_df.get(f'transformer_mean_{metric}', None)
-            naive2_mean = summary_df.get(f'naive2_mean_{metric}', None)
-            
-            if transformer_mean is not None and naive2_mean is not None:
-                plt.figure(figsize=(8, 6))
-                methods = ['Transformer', 'Naive2']
-                values = [transformer_mean.values[0], naive2_mean.values[0]]
-                
-                bars = plt.bar(methods, values)
-                
-                # Add value labels
-                for bar in bars:
-                    height = bar.get_height()
-                    plt.text(
-                        bar.get_x() + bar.get_width()/2.,
-                        height,
-                        f'{height:.4f}',
-                        ha='center',
-                        va='bottom',
-                        rotation=0
-                    )
-                
-                # Add labels and title
-                plt.title(f'{display_name} Comparison for {model_name}')
-                plt.ylabel(display_name)
-                plt.grid(True, alpha=0.3, axis='y')
-                
-                # Save the plot
-                filename = f'evaluation/tourism/{model_name}_{sample_size}series_{metric}_comparison_{timestamp}.png'
-                plt.savefig(filename)
-                plt.close()
-                
-                logger.info(f"Saved {metric} comparison plot to {filename}")
-    else:
-        # Define metrics to plot (with 'mean_' prefix)
-        metrics = ['mean_mae', 'mean_mape', 'mean_smape', 'mean_rmse', 'mean_wmape', 'mean_mase']
-        display_names = ['MAE', 'MAPE', 'SMAPE', 'RMSE', 'WMAPE', 'MASE']
-        
-        # Filter to only include metrics that exist in the DataFrame
-        available_metrics = [m for m in metrics if m in summary_df.columns]
-        display_names = [display_names[metrics.index(m)] for m in available_metrics]
-        
-        if not available_metrics:
-            logger.warning("No metrics available for plotting")
-            return
-        
-        # Create plot
-        plt.figure(figsize=(12, 8))
-        
-        # Create bar plot
-        bars = plt.bar(display_names, summary_df[available_metrics].values[0])
-        
-        # Add value labels
-        for bar in bars:
-            height = bar.get_height()
-            plt.text(
-                bar.get_x() + bar.get_width()/2.,
-                height,
-                f'{height:.4f}',
-                ha='center',
-                va='bottom',
-                rotation=0
-            )
-        
-        # Add labels and title
-        plt.title(f'Summary Metrics for {model_name} ({sample_size} series)')
-        plt.xlabel('Metric')
-        plt.ylabel('Value')
-        plt.grid(True, alpha=0.3)
-        
-        # Save the plot
-        filename = f'evaluation/tourism/{model_name}_{sample_size}series_metrics_{timestamp}.png'
-        plt.savefig(filename)
-        plt.close()
-        
-        logger.info(f"Saved summary metrics plot to {filename}")
+    try:
+        # Use the correct predict method with the DataFrame directly
+        forecasts = model.predict(df=test_series)
+        logger.info(f"Generated forecasts for {len(forecasts['unique_id'].unique())} series")
+        return forecasts
+    except Exception as e:
+        logger.error(f"Error generating forecasts with global NBEATS model: {str(e)}")
+        raise
 
 
 def main():
     """Main function to run the evaluation."""
-    parser = argparse.ArgumentParser(description='Evaluate the transformer model on Tourism data')
+    parser = argparse.ArgumentParser(description='Evaluate transformer model on Tourism data')
     parser.add_argument('--model-name', type=str, required=True,
-                        help='Name of the model to evaluate (should be a directory in models/final/)')
-    parser.add_argument('--sample-size', type=int, default=366,
-                        help='Number of series to sample for evaluation')
-    parser.add_argument('--forecast-horizon', type=int, default=24,
-                        help='Number of periods to forecast (24 for monthly as per the paper)')
-    parser.add_argument('--input-length', type=int, default=60,
-                        help='Length of input sequence for the model')
-    parser.add_argument('--random-seed', type=int, default=42,
-                        help='Random seed for reproducibility')
-    parser.add_argument('--log-transform', action='store_true',
-                        help='Apply log transformation to the data before forecasting (to handle increasing variance)')
-    parser.add_argument('--include-naive2', action='store_true',
-                        help='Include Naive2 benchmark (average of last 2 values)')
+                       help='Name of the model to evaluate')
+    parser.add_argument('--series-id', type=str,
+                       help='Optional: evaluate only this specific series')
+    parser.add_argument('--series-list', type=str,
+                       help='Optional: comma-separated list of series IDs to evaluate (e.g., "T1,T2,T3")')
     args = parser.parse_args()
-    
-    # Create necessary directories
-    setup_directories()
     
     # Load data
     train_df, test_df = load_tourism_data()
     
-    # For TOURISM monthly dataset, paper reports 366 series
-    logger.info(f"Paper reports 366 monthly series with forecast horizon of 24")
+    # Get unique series IDs
+    all_series_ids = train_df['unique_id'].unique().tolist()
     
-    # Sample series
-    series_ids, sampled_train_df, sampled_test_df = sample_series(
-        train_df=train_df,
-        test_df=test_df,
-        sample_size=args.sample_size,
-        random_seed=args.random_seed
-    )
-    
-    # Evaluate model
-    detailed_df, summary_df = evaluate_model(
-        model_name=args.model_name,
-        train_df=sampled_train_df,
-        test_df=sampled_test_df,
-        series_ids=series_ids,
-        forecast_horizon=args.forecast_horizon,
-        input_length=args.input_length,
-        random_seed=args.random_seed,
-        log_transform=args.log_transform,
-        include_naive2=args.include_naive2
-    )
-    
-    # Save results
-    save_results(
-        detailed_df=detailed_df,
-        summary_df=summary_df,
-        model_name=args.model_name,
-        sample_size=args.sample_size,
-        include_naive2=args.include_naive2
-    )
-    
-    # Plot summary metrics
-    plot_summary_metrics(
-        summary_df=summary_df,
-        model_name=args.model_name,
-        sample_size=args.sample_size,
-        include_naive2=args.include_naive2
-    )
+    # Determine which series to evaluate
+    if args.series_list:
+        # Parse the comma-separated list
+        series_ids_to_evaluate = [s.strip() for s in args.series_list.split(',')]
+        # Verify all specified series exist in the dataset
+        for series_id in series_ids_to_evaluate:
+            if series_id not in all_series_ids:
+                logger.warning(f"Series {series_id} not found in dataset, will be skipped")
+        # Only keep valid series IDs
+        series_ids_to_evaluate = [s for s in series_ids_to_evaluate if s in all_series_ids]
+        if not series_ids_to_evaluate:
+            logger.error("None of the specified series were found in the dataset")
+            return
+        logger.info(f"Evaluating {len(series_ids_to_evaluate)} series: {', '.join(series_ids_to_evaluate)}")
+        
+        # Run evaluation with the specified list of series
+        evaluate_model(
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            series_ids=series_ids_to_evaluate,
+            specific_series=None  # Not using specific_series since we're using series_ids
+        )
+    elif args.series_id:
+        # Single series evaluation
+        if args.series_id not in all_series_ids:
+            logger.error(f"Series {args.series_id} not found in dataset")
+            return
+        logger.info(f"Evaluating single series: {args.series_id}")
+        
+        # Run evaluation with the specific series
+        evaluate_model(
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            series_ids=all_series_ids,
+            specific_series=args.series_id
+        )
+    else:
+        # Evaluate all series
+        logger.info(f"Evaluating all {len(all_series_ids)} series")
+        
+        # Run evaluation with all series
+        evaluate_model(
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            series_ids=all_series_ids,
+            specific_series=None
+        )
     
     logger.info("Evaluation complete")
 

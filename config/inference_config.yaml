@@ -3,7 +3,7 @@
 # Whether to apply detrending during inference
 # If true, the forecast generator will perform trend decomposition and recomposition
 # If false, no detrending/retrending will be applied
-apply_detrending: true
+apply_detrending: true #best results with true
 
 # Whether to only remove positive trends
 # If true, negative trends will be preserved (not removed)
