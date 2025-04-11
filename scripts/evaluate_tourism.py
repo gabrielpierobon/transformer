@@ -7,17 +7,19 @@ import argparse
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
-import time
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import pytorch_lightning as pl
 from neuralforecast import NeuralForecast
 from neuralforecast.models import NBEATS
-from neuralforecast.losses.pytorch import DistributionLoss, MAE
+from neuralforecast.losses.pytorch import DistributionLoss, MAE, MAPE
+from neuralforecast.tsdataset import TimeSeriesDataset
 
 # Add project root to Python path
 project_root = str(Path(__file__).resolve().parents[1])
@@ -48,7 +50,7 @@ def calculate_smape(actual: np.ndarray, predicted: np.ndarray) -> float:
     mask = denominator > 0
     if np.any(mask):
         return np.mean(np.abs(predicted[mask] - actual[mask]) / denominator[mask]) * 100
-        return np.nan
+    return np.nan
 
 
 def calculate_naive2_forecast(values: np.ndarray, horizon: int) -> np.ndarray:
@@ -104,13 +106,54 @@ def load_tourism_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     return train_df, test_df
 
 
+def train_global_nbeats_model(train_df: pd.DataFrame, forecast_horizon: int) -> NeuralForecast:
+    """Train a global NBEATS model on all series at once.
+    
+    Args:
+        train_df: DataFrame with 'unique_id', 'ds', and 'y' columns for all series
+        forecast_horizon: Number of steps to forecast
+        
+    Returns:
+        Trained NeuralForecast model with NBEATS
+    """
+    logger.info("Training global NBEATS model on all series...")
+    
+    # Initialize NBEATS model with early stopping
+    nbeats_model = NBEATS(
+        h=forecast_horizon,             # Forecast horizon
+        input_size=60,                  # Keep input window size at 60
+        max_steps=3000,                 # Maximum number of training steps
+        early_stop_patience_steps=50,   # Stop after 10 validation steps without improvement
+        val_check_steps=100,             # Check validation every 20 steps
+        learning_rate=0.0001,            # Learning rate
+        loss=MAPE(),                    # Use MAPE loss
+        #loss=MAE(),                     # Use MAE loss
+        random_seed=42                  # For reproducibility
+    )
+    
+    # Create NeuralForecast model
+    nf = NeuralForecast(
+        models=[nbeats_model],
+        freq='M'  # Monthly frequency
+    )
+    
+    try:
+        # Train the model with early stopping
+        nf.fit(df=train_df, val_size=24)  # Use 24 months (2 years) for validation
+        #nf.fit(df=train_df)
+        logger.info("Global NBEATS model training complete")
+        return nf
+    except Exception as e:
+        logger.error(f"Error training global NBEATS model: {str(e)}")
+        raise
+
+
 def plot_forecast(
     series_id: str,
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     forecast: pd.DataFrame,
-    nbeats_forecast_60: pd.DataFrame,
-    nbeats_forecast_full: pd.DataFrame,
+    nbeats_forecast: pd.DataFrame,
     naive2_forecast: np.ndarray,
     model_name: str,
     was_log_transformed: bool = False
@@ -145,44 +188,30 @@ def plot_forecast(
         dates, values = zip(*actuals)
         plt.plot(dates, values, 'g-', label='Actual', linewidth=2.5)
     
-    # Plot forecasts
+    # Plot Transformer forecast
     transformer_label = 'Transformer'
     if was_log_transformed:
         transformer_label += ' (log transformed)'
     plt.plot(forecast['ds'], forecast['q_0.5'], 'r--', label=transformer_label, linewidth=1.5)
     
-    # Find column for NBEATS 60 forecast
-    nbeats_column_60 = None
-    if 'NBEATS_60' in nbeats_forecast_60.columns:
-        nbeats_column_60 = 'NBEATS_60'
-    elif 'NBEATS' in nbeats_forecast_60.columns:
-        nbeats_column_60 = 'NBEATS'
-    else:
-        for col in nbeats_forecast_60.columns:
-            if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast_60[col]):
-                nbeats_column_60 = col
-                break
-    
-    # Find column for NBEATS full forecast
-    nbeats_column_full = None
-    if 'NBEATS_Full' in nbeats_forecast_full.columns:
-        nbeats_column_full = 'NBEATS_Full'
-    elif 'NBEATS' in nbeats_forecast_full.columns:
-        nbeats_column_full = 'NBEATS'
-    else:
-        for col in nbeats_forecast_full.columns:
-            if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast_full[col]):
-                nbeats_column_full = col
-                break
-    
-    # Plot NBEATS forecasts if columns were found
-    if nbeats_column_60:
-        plt.plot(nbeats_forecast_60['ds'], nbeats_forecast_60[nbeats_column_60], 'c--', 
-                 label='NBEATS (60 points)', linewidth=1.5)
-    
-    if nbeats_column_full:
-        plt.plot(nbeats_forecast_full['ds'], nbeats_forecast_full[nbeats_column_full], 'm--', 
-                 label='NBEATS (full history)', linewidth=1.5)
+    # Plot NBEATS forecast if available
+    if nbeats_forecast is not None and not nbeats_forecast.empty:
+        nbeats_column = None
+        
+        # Try to find a usable column for NBEATS forecast
+        if 'NBEATS' in nbeats_forecast.columns:
+            nbeats_column = 'NBEATS'
+        else:
+            # Look for any numeric column that's not ds or unique_id
+            for col in nbeats_forecast.columns:
+                if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast[col]):
+                    nbeats_column = col
+                    break
+        
+        # Only plot if we found a usable column
+        if nbeats_column is not None:
+            plt.plot(nbeats_forecast['ds'], nbeats_forecast[nbeats_column], 'c--', 
+                    label='NBEATS (global)', linewidth=1.5)
     
     # Plot Naive2 forecast
     forecast_dates = [pd.to_datetime(d) for d in forecast['ds']]
@@ -206,84 +235,6 @@ def plot_forecast(
     plot_dir.mkdir(parents=True, exist_ok=True)
     plt.savefig(plot_dir / f"{series_id}.png")
     plt.close()
-
-
-def generate_nbeats_forecast(train_df: pd.DataFrame, horizon: int, use_full_history: bool = False) -> pd.DataFrame:
-    """Generate forecast using enhanced NBEATS model configuration.
-    
-    Args:
-        train_df: Training data
-        horizon: Forecast horizon
-        use_full_history: Whether to use the entire history (True) or just the last 60 points (False)
-    """
-    # Calculate available data length
-    available_data_length = len(train_df)
-    
-    # Determine input size based on whether to use full history
-    if use_full_history:
-        # Use full history, but make sure to leave enough data for training windows
-        # NBEATS requires at least 2 windows
-        input_size = min(available_data_length - horizon - 1, available_data_length)
-        model_prefix = "NBEATS_Full"
-    else:
-        # Use 60 points or less if not enough data
-        input_size = min(60, available_data_length - horizon - 1)
-        model_prefix = "NBEATS_60"
-    
-    # Ensure input_size is positive
-    input_size = max(input_size, 1)
-    
-    logger.info(f"Using input_size={input_size} for {model_prefix} model (series length: {available_data_length})")
-    
-    # Initialize NBEATS model with a more powerful configuration
-    model = NBEATS(
-        h=horizon,                     # forecast horizon
-        input_size=input_size,         # Either 60 or full history
-        loss=MAE(),                    # simple MAE loss
-        stack_types=['trend', 'seasonality'],  # Use both trend and seasonality
-        n_blocks=[3, 3],               # More blocks for better representation
-        mlp_units=[[256, 256], [256, 256]],  # Larger network for more capacity
-        n_harmonics=2,                 # More harmonics for better seasonality modeling
-        n_polynomials=3,               # Higher degree for more flexible trend
-        max_steps=200,                 # More training steps
-        learning_rate=0.001,           # Standard learning rate
-        batch_size=32,                 # Standard batch size
-        scaler_type='standard'         # Scale data for better training
-    )
-
-    # Initialize NeuralForecast with NBEATS
-    nf = NeuralForecast(
-        models=[model],
-        freq='M'  # Monthly frequency
-    )
-
-    try:
-        # Fit model and generate forecast
-        nf.fit(df=train_df, val_size=0)  # No validation
-        forecast = nf.predict()
-        
-        # Debug: Print column names
-        logger.info(f"{model_prefix} forecast columns: {forecast.columns.tolist()}")
-        
-        # Add a column to identify this forecast version
-        if 'NBEATS' in forecast.columns:
-            forecast[model_prefix] = forecast['NBEATS'].values
-        
-        return forecast
-    except Exception as e:
-        logger.error(f"Error training {model_prefix} model: {str(e)}")
-        # Create an empty forecast with the same structure as transformer forecast
-        empty_forecast = pd.DataFrame({
-            'ds': train_df['ds'].iloc[-1:].values[0] + pd.DateOffset(months=range(1, horizon+1)),
-            'unique_id': [train_df['unique_id'].iloc[0]] * horizon
-        })
-        # Add a column with zeros for the forecast
-        empty_forecast['NBEATS'] = np.zeros(horizon)
-        # Add identification column
-        empty_forecast[model_prefix] = np.zeros(horizon)
-        
-        logger.warning(f"Using fallback zero forecast for {model_prefix}")
-        return empty_forecast
 
 
 def should_log_transform(series: pd.DataFrame, inference_window: int = 60) -> bool:
@@ -378,10 +329,10 @@ def evaluate_model(
     forecast_horizon: int = 24,
     specific_series: str = None
 ) -> None:
-    """Evaluate the model on tourism data."""
-    # Initialize model
-    logger.info(f"Loading model {model_name}")
-    model = TransformerModel(model_name=model_name)
+    """Evaluate the model on tourism data using global forecasting approach."""
+    # Initialize transformer model
+    logger.info(f"Loading transformer model {model_name}")
+    transformer_model = TransformerModel(model_name=model_name)
     
     # Start timing
     start_time = time.time()
@@ -390,8 +341,18 @@ def evaluate_model(
     if specific_series:
         if specific_series not in series_ids:
             raise ValueError(f"Series {specific_series} not found in dataset")
-        series_ids = [specific_series]
+        series_to_evaluate = [specific_series]
         logger.info(f"Evaluating only series {specific_series}")
+    else:
+        series_to_evaluate = series_ids
+        logger.info(f"Evaluating {len(series_to_evaluate)} series")
+    
+    # Filter the train and test dataframes to include only the series we're evaluating
+    filtered_train_df = train_df[train_df['unique_id'].isin(series_to_evaluate)]
+    filtered_test_df = test_df[test_df['unique_id'].isin(series_to_evaluate)]
+    
+    # Report on the data we're using
+    logger.info(f"Using {len(filtered_train_df)} training records and {len(filtered_test_df)} test records")
     
     # Prepare results storage
     results = []
@@ -400,12 +361,29 @@ def evaluate_model(
     os.makedirs("evaluation/tourism", exist_ok=True)
     excel_path = f"evaluation/tourism/{model_name}_evaluation.xlsx"
     
-    # Process each series
-    for series_idx, series_id in enumerate(tqdm(series_ids, desc="Evaluating series")):
+    # Train global NBEATS model on all series at once
+    global_nbeats_model = None
+    try:
+        global_nbeats_model = train_global_nbeats_model(filtered_train_df, forecast_horizon)
+        logger.info("Global NBEATS model training complete")
+    except Exception as e:
+        logger.error(f"Failed to train global NBEATS model: {str(e)}")
+        logger.warning("Will proceed with evaluation using only Transformer and Naive2 models")
+    
+    # Process each series for transformer model and naive2 forecasts
+    for series_idx, series_id in enumerate(tqdm(series_to_evaluate, desc="Evaluating series")):
         try:
             # Get series data
-            series_train = train_df[train_df['unique_id'] == series_id]
-            series_test = test_df[test_df['unique_id'] == series_id]
+            series_train = filtered_train_df[filtered_train_df['unique_id'] == series_id]
+            series_test = filtered_test_df[filtered_test_df['unique_id'] == series_id]
+            
+            if len(series_train) == 0:
+                logger.warning(f"No training data found for series {series_id}, skipping")
+                continue
+                
+            if len(series_test) == 0:
+                logger.warning(f"No test data found for series {series_id}, skipping")
+                continue
             
             # Save original data for plotting
             original_series_train = series_train.copy()
@@ -414,14 +392,14 @@ def evaluate_model(
             needs_log_transform = should_log_transform(series_train)
             was_transformed = False
             
-            # Generate transformer forecast using cleaned data (with log transform if needed)
+            # Generate transformer forecast
             if needs_log_transform:
                 logger.info(f"Applying log transform for series {series_id} (Transformer model only)")
                 transformed_series, was_transformed = apply_log_transform(series_train)
                 transformed_series_indexed = transformed_series.set_index('ds')
                 
                 # Generate forecast in log space
-                log_forecast = model.predict(
+                log_forecast = transformer_model.predict(
                     series_df=transformed_series_indexed,
                     n=forecast_horizon
                 )
@@ -437,202 +415,143 @@ def evaluate_model(
                 # No transformation needed
                 logger.info(f"No log transform needed for series {series_id}")
                 series_train_indexed = series_train.set_index('ds')
-                forecast = model.predict(
+                forecast = transformer_model.predict(
                     series_df=series_train_indexed,
                     n=forecast_horizon
                 )
             
-            # Generate NBEATS forecasts - both 60-point and full history versions
-            # (No log transform for NBEATS as requested)
-            nbeats_forecast_60 = generate_nbeats_forecast(series_train, forecast_horizon, use_full_history=False)
-            nbeats_forecast_full = generate_nbeats_forecast(series_train, forecast_horizon, use_full_history=True)
-            
-            # Generate Naive2 forecast from cleaned data (no log transform)
+            # Generate Naive2 forecast
             naive2_forecast = calculate_naive2_forecast(
                 values=series_train['y'].values,
                 horizon=forecast_horizon
             )
             
-            # Get actual values
-            actual_values = []
-            for date in forecast['ds']:
-                date_str = pd.to_datetime(date)
-                matching_rows = series_test[series_test['ds'] == date_str]
-                if not matching_rows.empty:
-                    actual_values.append(matching_rows.iloc[0]['y'])
-                else:
-                    actual_values.append(np.nan)
-            actual_values = np.array(actual_values)
-            
-            # Find column for NBEATS 60 forecast
-            nbeats_column_60 = None
-            # First check for our added column
-            if 'NBEATS_60' in nbeats_forecast_60.columns:
-                nbeats_column_60 = 'NBEATS_60'
-            # Then check for NBEATS column
-            elif 'NBEATS' in nbeats_forecast_60.columns:
-                nbeats_column_60 = 'NBEATS'
-            # Finally, try any numeric column that's not ds or unique_id
-            else:
-                for col in nbeats_forecast_60.columns:
-                    if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast_60[col]):
-                        logger.info(f"Using column '{col}' for NBEATS_60 forecast")
-                        nbeats_column_60 = col
-                        break
-            
-            # Find column for NBEATS full forecast
-            nbeats_column_full = None
-            # First check for our added column
-            if 'NBEATS_Full' in nbeats_forecast_full.columns:
-                nbeats_column_full = 'NBEATS_Full'
-            # Then check for NBEATS column
-            elif 'NBEATS' in nbeats_forecast_full.columns:
-                nbeats_column_full = 'NBEATS'
-            # Finally, try any numeric column that's not ds or unique_id
-            else:
-                for col in nbeats_forecast_full.columns:
-                    if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast_full[col]):
-                        logger.info(f"Using column '{col}' for NBEATS_Full forecast")
-                        nbeats_column_full = col
-                        break
-            
-            if nbeats_column_60 is None or nbeats_column_full is None:
-                logger.error(f"NBEATS_60 columns: {nbeats_forecast_60.columns.tolist()}")
-                logger.error(f"NBEATS_Full columns: {nbeats_forecast_full.columns.tolist()}")
-                raise ValueError("No usable NBEATS forecast column found")
-            
-            logger.info(f"Using NBEATS_60 column: {nbeats_column_60}")
-            logger.info(f"Using NBEATS_Full column: {nbeats_column_full}")
-            
-            # Calculate metrics for each model
-            transformer_metrics = calculate_metrics(actual_values, forecast['q_0.5'].values)
-            nbeats_60_metrics = calculate_metrics(actual_values, nbeats_forecast_60[nbeats_column_60].values)
-            nbeats_full_metrics = calculate_metrics(actual_values, nbeats_forecast_full[nbeats_column_full].values)
-            naive2_metrics = calculate_metrics(actual_values, naive2_forecast)
-            
-            # Store results with proper column names
+            # Store the results for this series
             results.append({
                 'series_id': series_id,
                 'log_transformed': was_transformed,
-                'transformer_mae': transformer_metrics['mae'],
-                'transformer_mape': transformer_metrics['mape'],
-                'transformer_smape': transformer_metrics['smape'],
-                'transformer_rmse': transformer_metrics['rmse'],
-                'nbeats_60_mae': nbeats_60_metrics['mae'],
-                'nbeats_60_mape': nbeats_60_metrics['mape'],
-                'nbeats_60_smape': nbeats_60_metrics['smape'],
-                'nbeats_60_rmse': nbeats_60_metrics['rmse'],
-                'nbeats_full_mae': nbeats_full_metrics['mae'],
-                'nbeats_full_mape': nbeats_full_metrics['mape'],
-                'nbeats_full_smape': nbeats_full_metrics['smape'],
-                'nbeats_full_rmse': nbeats_full_metrics['rmse'],
-                'naive2_mae': naive2_metrics['mae'],
-                'naive2_mape': naive2_metrics['mape'],
-                'naive2_smape': naive2_metrics['smape'],
-                'naive2_rmse': naive2_metrics['rmse']
+                'transformer_forecast': forecast,
+                'naive2_forecast': naive2_forecast,
+                'actual_values': series_test
             })
-            
-            # Update Excel after each series
-            current_results_df = pd.DataFrame(results)
-            # Calculate summary statistics
-            current_summary_stats = {
-                'Metric': ['MAPE', 'SMAPE', 'MAE', 'RMSE'],
-                'Transformer': [
-                    current_results_df['transformer_mape'].mean(),
-                    current_results_df['transformer_smape'].mean(),
-                    current_results_df['transformer_mae'].mean(),
-                    current_results_df['transformer_rmse'].mean()
-                ],
-                'NBEATS (60 points)': [
-                    current_results_df['nbeats_60_mape'].mean(),
-                    current_results_df['nbeats_60_smape'].mean(),
-                    current_results_df['nbeats_60_mae'].mean(),
-                    current_results_df['nbeats_60_rmse'].mean()
-                ],
-                'NBEATS (full history)': [
-                    current_results_df['nbeats_full_mape'].mean(),
-                    current_results_df['nbeats_full_smape'].mean(),
-                    current_results_df['nbeats_full_mae'].mean(),
-                    current_results_df['nbeats_full_rmse'].mean()
-                ],
-                'Naive2': [
-                    current_results_df['naive2_mape'].mean(),
-                    current_results_df['naive2_smape'].mean(),
-                    current_results_df['naive2_mae'].mean(),
-                    current_results_df['naive2_rmse'].mean()
-                ]
-            }
-            current_summary_df = pd.DataFrame(current_summary_stats)
-            
-            # Add progress info
-            current_progress_info = pd.DataFrame({
-                'Info': ['Last Series Processed', 'Remaining Series', 'Estimated Time Left'],
-                'Value': [series_id, len(series_ids) - (series_idx + 1), 
-                          f"~{(len(series_ids) - (series_idx + 1)) * (series_idx > 0 and (time.time() - start_time) / (series_idx + 1) / 60):.1f} min" 
-                          if series_idx > 0 else "Calculating..."]
-            })
-            
-            # Save both detailed and summary results
-            with pd.ExcelWriter(excel_path) as writer:
-                current_summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                current_progress_info.to_excel(writer, sheet_name='Progress', index=False)
-                current_results_df.to_excel(writer, sheet_name='Detailed', index=False)
             
             # Log progress
-            logger.info(f"Completed {series_idx+1}/{len(series_ids)} series ({(series_idx+1)/len(series_ids)*100:.1f}%)")
-            
-            # Plot results using original data for visualization
-            plot_forecast(
-                series_id=series_id,
-                train_df=original_series_train,  # Use original data for plotting
-                test_df=series_test,
-                forecast=forecast,
-                nbeats_forecast_60=nbeats_forecast_60,
-                nbeats_forecast_full=nbeats_forecast_full,
-                naive2_forecast=naive2_forecast,
-                model_name=model_name,
-                was_log_transformed=was_transformed
-            )
+            logger.info(f"Completed Transformer & Naive2 for series {series_idx+1}/{len(series_to_evaluate)} ({(series_idx+1)/len(series_to_evaluate)*100:.1f}%)")
                 
         except Exception as e:
             # Convert exception to string to handle any type of error object
             error_message = f"{type(e).__name__}: {e}"
             logger.error(f"Error processing series {series_id}: {error_message}")
-            # Add empty results to maintain DataFrame structure
-            results.append({
-                'series_id': series_id,
-                'log_transformed': False,
-                'transformer_mae': np.nan,
-                'transformer_mape': np.nan,
-                'transformer_smape': np.nan,
-                'transformer_rmse': np.nan,
-                'nbeats_60_mae': np.nan,
-                'nbeats_60_mape': np.nan,
-                'nbeats_60_smape': np.nan,
-                'nbeats_60_rmse': np.nan,
-                'nbeats_full_mae': np.nan,
-                'nbeats_full_mape': np.nan,
-                'nbeats_full_smape': np.nan,
-                'nbeats_full_rmse': np.nan,
-                'naive2_mae': np.nan,
-                'naive2_mape': np.nan,
-                'naive2_smape': np.nan,
-                'naive2_rmse': np.nan
-            })
-            
-            # Still update Excel file even on error
-            try:
-                current_results_df = pd.DataFrame(results)
-                with pd.ExcelWriter(excel_path) as writer:
-                    current_results_df.to_excel(writer, sheet_name='Detailed', index=False)
-                    pd.DataFrame({'Error': [error_message]}).to_excel(writer, sheet_name='Errors', index=False)
-            except Exception as excel_error:
-                logger.error(f"Failed to update Excel file after error: {excel_error}")
-            
             continue
     
-    # Final save at the end (this is redundant now but kept for safety)
-    results_df = pd.DataFrame(results)
+    # Generate global NBEATS forecasts for all series at once
+    nbeats_forecasts = {}
+    if global_nbeats_model is not None:
+        try:
+            # Generate forecasts for all series at once
+            all_nbeats_forecasts = predict_global_nbeats(global_nbeats_model, filtered_train_df)
+            
+            # Extract forecasts for each series
+            for series_id in series_to_evaluate:
+                series_forecast = all_nbeats_forecasts[all_nbeats_forecasts['unique_id'] == series_id]
+                if len(series_forecast) > 0:
+                    nbeats_forecasts[series_id] = series_forecast
+                else:
+                    logger.warning(f"No NBEATS forecast generated for series {series_id}")
+                    
+            logger.info(f"Generated NBEATS forecasts for {len(nbeats_forecasts)} series")
+        except Exception as e:
+            logger.error(f"Error generating global NBEATS forecasts: {str(e)}")
+    
+    # Calculate metrics and generate plots for all models
+    final_results = []
+    for result in results:
+        series_id = result['series_id']
+        transformer_forecast = result['transformer_forecast']
+        naive2_forecast = result['naive2_forecast']
+        actual_values_df = result['actual_values']
+        was_transformed = result['log_transformed']
+        
+        # Extract actual values as array
+        actual_values = []
+        for date in transformer_forecast['ds']:
+            date_str = pd.to_datetime(date)
+            matching_rows = actual_values_df[actual_values_df['ds'] == date_str]
+            if not matching_rows.empty:
+                actual_values.append(matching_rows.iloc[0]['y'])
+            else:
+                actual_values.append(np.nan)
+        actual_values = np.array(actual_values)
+        
+        # Get NBEATS forecast for this series if available
+        nbeats_forecast = None
+        if series_id in nbeats_forecasts:
+            nbeats_forecast = nbeats_forecasts[series_id]
+            nbeats_column = None
+            if 'NBEATS' in nbeats_forecast.columns:
+                nbeats_column = 'NBEATS'
+            else:
+                for col in nbeats_forecast.columns:
+                    if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast[col]):
+                        nbeats_column = col
+                        break
+            
+            if nbeats_column is not None:
+                nbeats_metrics = calculate_metrics(actual_values, nbeats_forecast[nbeats_column].values)
+            else:
+                logger.warning(f"No NBEATS forecast column found for series {series_id}")
+                nbeats_metrics = {
+                    'mae': np.nan,
+                    'mape': np.nan,
+                    'smape': np.nan,
+                    'rmse': np.nan
+                }
+        else:
+            nbeats_metrics = {
+                'mae': np.nan,
+                'mape': np.nan,
+                'smape': np.nan,
+                'rmse': np.nan
+            }
+        
+        # Calculate metrics for transformer and naive2
+        transformer_metrics = calculate_metrics(actual_values, transformer_forecast['q_0.5'].values)
+        naive2_metrics = calculate_metrics(actual_values, naive2_forecast)
+        
+        # Store results
+        final_results.append({
+            'series_id': series_id,
+            'log_transformed': was_transformed,
+            'transformer_mae': transformer_metrics['mae'],
+            'transformer_mape': transformer_metrics['mape'],
+            'transformer_smape': transformer_metrics['smape'],
+            'transformer_rmse': transformer_metrics['rmse'],
+            'nbeats_mae': nbeats_metrics['mae'],
+            'nbeats_mape': nbeats_metrics['mape'],
+            'nbeats_smape': nbeats_metrics['smape'],
+            'nbeats_rmse': nbeats_metrics['rmse'],
+            'naive2_mae': naive2_metrics['mae'],
+            'naive2_mape': naive2_metrics['mape'],
+            'naive2_smape': naive2_metrics['smape'],
+            'naive2_rmse': naive2_metrics['rmse']
+        })
+        
+        # Plot results
+        series_train = filtered_train_df[filtered_train_df['unique_id'] == series_id]
+        if series_id in nbeats_forecasts:
+            plot_forecast(
+                series_id=series_id,
+                train_df=series_train,
+                test_df=actual_values_df,
+                forecast=transformer_forecast,
+                nbeats_forecast=nbeats_forecasts[series_id],
+                naive2_forecast=naive2_forecast,
+                model_name=model_name,
+                was_log_transformed=was_transformed
+            )
+    
+    # Create final results DataFrame
+    results_df = pd.DataFrame(final_results)
     
     # Calculate summary statistics
     summary_stats = {
@@ -643,17 +562,11 @@ def evaluate_model(
             results_df['transformer_mae'].mean(),
             results_df['transformer_rmse'].mean()
         ],
-        'NBEATS (60 points)': [
-            results_df['nbeats_60_mape'].mean(),
-            results_df['nbeats_60_smape'].mean(),
-            results_df['nbeats_60_mae'].mean(),
-            results_df['nbeats_60_rmse'].mean()
-        ],
-        'NBEATS (full history)': [
-            results_df['nbeats_full_mape'].mean(),
-            results_df['nbeats_full_smape'].mean(),
-            results_df['nbeats_full_mae'].mean(),
-            results_df['nbeats_full_rmse'].mean()
+        'NBEATS (global)': [
+            results_df['nbeats_mape'].mean(),
+            results_df['nbeats_smape'].mean(),
+            results_df['nbeats_mae'].mean(),
+            results_df['nbeats_rmse'].mean()
         ],
         'Naive2': [
             results_df['naive2_mape'].mean(),
@@ -664,25 +577,47 @@ def evaluate_model(
     }
     summary_df = pd.DataFrame(summary_stats)
     
-    # Final save to Excel
+    # Save results to Excel
     with pd.ExcelWriter(excel_path) as writer:
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
         results_df.to_excel(writer, sheet_name='Detailed', index=False)
     
     logger.info(f"Results saved to {excel_path}")
+    
+    # Log summary statistics
     logger.info("\nSummary Statistics:")
     logger.info(f"Number of series evaluated: {len(results_df)}")
     
     logger.info("\nMean MAPE:")
     logger.info(f"Transformer: {results_df['transformer_mape'].mean():.2f}%")
-    logger.info(f"NBEATS (60 points): {results_df['nbeats_60_mape'].mean():.2f}%")
-    logger.info(f"NBEATS (full history): {results_df['nbeats_full_mape'].mean():.2f}%")
+    logger.info(f"NBEATS (global): {results_df['nbeats_mape'].mean():.2f}%")
     logger.info(f"Naive2: {results_df['naive2_mape'].mean():.2f}%")
     logger.info("\nMean SMAPE:")
     logger.info(f"Transformer: {results_df['transformer_smape'].mean():.2f}%")
-    logger.info(f"NBEATS (60 points): {results_df['nbeats_60_smape'].mean():.2f}%")
-    logger.info(f"NBEATS (full history): {results_df['nbeats_full_smape'].mean():.2f}%")
+    logger.info(f"NBEATS (global): {results_df['nbeats_smape'].mean():.2f}%")
     logger.info(f"Naive2: {results_df['naive2_smape'].mean():.2f}%")
+
+
+def predict_global_nbeats(model: NeuralForecast, test_series: pd.DataFrame) -> pd.DataFrame:
+    """Generate forecasts for all series at once using the global NBEATS model.
+    
+    Args:
+        model: Trained NeuralForecast model
+        test_series: DataFrame containing all test series
+        
+    Returns:
+        DataFrame with forecasts for all series
+    """
+    logger.info("Generating forecasts using global NBEATS model...")
+    
+    try:
+        # Use the correct predict method with the DataFrame directly
+        forecasts = model.predict(df=test_series)
+        logger.info(f"Generated forecasts for {len(forecasts['unique_id'].unique())} series")
+        return forecasts
+    except Exception as e:
+        logger.error(f"Error generating forecasts with global NBEATS model: {str(e)}")
+        raise
 
 
 def main():
@@ -692,22 +627,66 @@ def main():
                        help='Name of the model to evaluate')
     parser.add_argument('--series-id', type=str,
                        help='Optional: evaluate only this specific series')
+    parser.add_argument('--series-list', type=str,
+                       help='Optional: comma-separated list of series IDs to evaluate (e.g., "T1,T2,T3")')
     args = parser.parse_args()
     
     # Load data
     train_df, test_df = load_tourism_data()
     
     # Get unique series IDs
-    series_ids = train_df['unique_id'].unique().tolist()
+    all_series_ids = train_df['unique_id'].unique().tolist()
     
-    # Run evaluation
-    evaluate_model(
-        model_name=args.model_name,
-        train_df=train_df,
-        test_df=test_df,
-        series_ids=series_ids,
-        specific_series=args.series_id
-    )
+    # Determine which series to evaluate
+    if args.series_list:
+        # Parse the comma-separated list
+        series_ids_to_evaluate = [s.strip() for s in args.series_list.split(',')]
+        # Verify all specified series exist in the dataset
+        for series_id in series_ids_to_evaluate:
+            if series_id not in all_series_ids:
+                logger.warning(f"Series {series_id} not found in dataset, will be skipped")
+        # Only keep valid series IDs
+        series_ids_to_evaluate = [s for s in series_ids_to_evaluate if s in all_series_ids]
+        if not series_ids_to_evaluate:
+            logger.error("None of the specified series were found in the dataset")
+            return
+        logger.info(f"Evaluating {len(series_ids_to_evaluate)} series: {', '.join(series_ids_to_evaluate)}")
+        
+        # Run evaluation with the specified list of series
+        evaluate_model(
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            series_ids=series_ids_to_evaluate,
+            specific_series=None  # Not using specific_series since we're using series_ids
+        )
+    elif args.series_id:
+        # Single series evaluation
+        if args.series_id not in all_series_ids:
+            logger.error(f"Series {args.series_id} not found in dataset")
+            return
+        logger.info(f"Evaluating single series: {args.series_id}")
+        
+        # Run evaluation with the specific series
+        evaluate_model(
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            series_ids=all_series_ids,
+            specific_series=args.series_id
+        )
+    else:
+        # Evaluate all series
+        logger.info(f"Evaluating all {len(all_series_ids)} series")
+        
+        # Run evaluation with all series
+        evaluate_model(
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            series_ids=all_series_ids,
+            specific_series=None
+        )
     
     logger.info("Evaluation complete")
 
