@@ -39,83 +39,73 @@ This will:
 
 ## Running the Evaluation
 
+The current tourism evaluation script compares three models:
+1. Your Transformer model
+2. A global NBEATS model (trained on all evaluated series at once)
+3. A Naive2 benchmark (using the average of the last 2 observations)
+
 ### Basic Evaluation
 
-To evaluate a transformer model on the Tourism Monthly dataset:
+To evaluate your transformer model on all tourism series:
 
 ```bash
-python scripts/evaluate_tourism.py --model-name <MODEL_NAME> --sample-size 366 --forecast-horizon 24
+python scripts/evaluate_tourism.py --model-name your_model_name
 ```
 
-Where:
-- `<MODEL_NAME>` is the name of your trained model (e.g., `transformer_1.0_directml_point_mse_M1_M48000_sampled2101_full_4epoch`)
-- `--sample-size 366` uses all 366 monthly series (as in the paper)
-- `--forecast-horizon 24` sets the forecast horizon to 24 months (as in the paper)
+Where `your_model_name` is the name of your trained transformer model (e.g., `transformer_1.0_directml_point_mse_M1_M48000_sampled2101_full_4epoch`).
 
-### With Log Transformation
+### Evaluating Specific Series
 
-For series with increasing variance, you can apply log transformation:
+To evaluate a single tourism series:
 
 ```bash
-python scripts/evaluate_tourism.py --model-name <MODEL_NAME> --sample-size 366 --forecast-horizon 24 --log-transform
+python scripts/evaluate_tourism.py --model-name your_model_name --series-id T1
 ```
 
-### Benchmark Comparisons
-
-The evaluation script automatically compares your model's performance against the Seasonal Naive (SNaive) benchmark. To also include a Naive2 benchmark in your comparison:
+To evaluate multiple specific series:
 
 ```bash
-python scripts/evaluate_tourism.py --model-name <MODEL_NAME> --sample-size 366 --forecast-horizon 24 --include-naive2
+python scripts/evaluate_tourism.py --model-name your_model_name --series-list "T1,T2,T3,T4,T5"
 ```
 
-This will:
-- Calculate Naive2 forecasts for each series (using the average of the last 2 observed values)
-- Include Naive2 metrics in the summary results
-- Show improvement percentages over both SNaive and Naive2
+### Global NBEATS Comparison
 
-You can combine this with other options:
+The script automatically trains a global NBEATS model on all the series being evaluated, using the NeuralForecast library. This global approach:
 
-```bash
-python scripts/evaluate_tourism.py --model-name <MODEL_NAME> --sample-size 366 --forecast-horizon 24 --log-transform --include-naive2
-```
+1. Trains a single NBEATS model across all specified series
+2. Uses MAPE as the training loss function
+3. Includes early stopping to improve training efficiency
+4. Uses a 60-point input window (the same as the transformer model)
+5. Provides a strong benchmark for comparison
 
-### Using Batch Files
+The global NBEATS model is trained with these parameters:
+- Early stopping patience: 50 steps
+- Validation check frequency: Every 100 steps
+- Learning rate: 0.0001
+- Validation size: 24 months
 
-For convenience, you can use the provided batch file (Windows):
+Each series is evaluated with:
+- MAPE (Mean Absolute Percentage Error)
+- MAE (Mean Absolute Error)
+- SMAPE (Symmetric Mean Absolute Percentage Error)
+- RMSE (Root Mean Square Error)
 
-```bash
-scripts\run_tourism_evaluation.bat
-```
+### Output and Visualizations
 
-Or with log transformation:
+For each evaluation run, the script produces:
 
-```bash
-scripts\run_tourism_evaluation.bat --log-transform
-```
+1. **Individual plots** for each series showing:
+   - Historical data with the last 60 points highlighted
+   - Actual future values
+   - Transformer model forecast
+   - Global NBEATS forecast
+   - Naive2 benchmark forecast
 
-With Naive2 benchmark:
-```bash
-scripts\run_tourism_evaluation.bat --include-naive2
-```
+2. **Detailed metrics** in Excel format:
+   - Per-series performance for all three models
+   - Overall summary statistics
 
-### Using Python Script (Linux/macOS)
-
-For Linux/macOS users:
-
-```bash
-python scripts/run_tourism_evaluation.py
-```
-
-Or with log transformation:
-
-```bash
-python scripts/run_tourism_evaluation.py --log-transform
-```
-
-With Naive2 benchmark:
-```bash
-python scripts/run_tourism_evaluation.py --include-naive2
-```
+All outputs are saved to the `evaluation/tourism/` directory.
 
 ## Understanding the Results
 

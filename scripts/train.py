@@ -11,7 +11,7 @@ import re  # Add regular expressions
 # Add the src directory to the path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.models.transformer import get_model, gaussian_nll, smape_loss, hybrid_loss
+from src.models.transformer import get_model, gaussian_nll, smape_loss, hybrid_loss, mape_loss
 from src.visualization.plot_utils import plot_random_subsequences
 
 def parse_args():
@@ -109,7 +109,7 @@ def parse_args():
     parser.add_argument(
         '--loss-type',
         type=str,
-        choices=['gaussian_nll', 'smape', 'hybrid', 'mse'],
+        choices=['gaussian_nll', 'smape', 'hybrid', 'mse', 'mape'],
         help='Loss function type (default: gaussian_nll for probabilistic, smape for point)'
     )
     parser.add_argument(
@@ -661,6 +661,9 @@ def main():
     elif args.loss_type == 'mse':
         loss_type = 'mse'
         loss = 'mse'  # TensorFlow's built-in MSE loss
+    elif args.loss_type == 'mape':
+        loss_type = 'mape'
+        loss = mape_loss
     elif args.loss_type == 'hybrid':
         loss_type = 'hybrid'
         # Use custom hybrid loss with alpha parameter

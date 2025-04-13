@@ -130,6 +130,18 @@ def smape_loss(y_true, y_pred):
     denominator = tf.abs(true_o) + tf.abs(pred_o) + epsilon
     return 2 * tf.reduce_mean(numerator / denominator)
 
+def mape_loss(y_true, y_pred):
+    """Mean Absolute Percentage Error (MAPE) loss"""
+    epsilon = 1e-6  # small constant to avoid division by zero
+    true_o = tf.cast(y_true, tf.float32)
+    pred_o = tf.cast(y_pred, tf.float32)
+    
+    # Add epsilon to denominator to avoid division by zero
+    denominator = tf.maximum(tf.abs(true_o), epsilon)
+    
+    # Calculate MAPE
+    return tf.reduce_mean(tf.abs((true_o - pred_o) / denominator))
+
 def hybrid_loss(alpha=0.9):
     """
     Create a hybrid loss function combining sMAPE and Gaussian NLL.
@@ -205,7 +217,7 @@ def get_model(sequence_length=60, probabilistic=True, loss_type='gaussian_nll', 
     Args:
         sequence_length (int): Length of input sequences
         probabilistic (bool): Whether to use probabilistic predictions
-        loss_type (str): Type of loss function ('gaussian_nll', 'smape', 'hybrid', or 'mse')
+        loss_type (str): Type of loss function ('gaussian_nll', 'smape', 'hybrid', 'mape', or 'mse')
         loss_alpha (float): Weight for sMAPE in hybrid loss (1-alpha for Gaussian NLL)
     """
     model = build_transformer_model(
@@ -226,6 +238,12 @@ def get_model(sequence_length=60, probabilistic=True, loss_type='gaussian_nll', 
                 mu, _ = tf.split(y_pred, 2, axis=-1)
                 return smape_loss(y_true, mu)
             loss = smape_prob
+        elif loss_type == 'mape':
+            # For MAPE with probabilistic model, we'll only use the mean prediction
+            def mape_prob(y_true, y_pred):
+                mu, _ = tf.split(y_pred, 2, axis=-1)
+                return mape_loss(y_true, mu)
+            loss = mape_prob
         elif loss_type == 'hybrid':
             loss = hybrid_loss(alpha=loss_alpha)
         else:
@@ -234,6 +252,8 @@ def get_model(sequence_length=60, probabilistic=True, loss_type='gaussian_nll', 
         # Point model loss options
         if loss_type == 'smape':
             loss = smape_loss
+        elif loss_type == 'mape':
+            loss = mape_loss
         elif loss_type == 'mse':
             loss = 'mse'  # Use TensorFlow's built-in MSE loss
         else:

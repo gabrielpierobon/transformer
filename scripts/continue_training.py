@@ -89,7 +89,7 @@ def parse_args():
     parser.add_argument(
         '--loss-type',
         type=str,
-        choices=['gaussian_nll', 'smape', 'hybrid', 'mse'],
+        choices=['gaussian_nll', 'smape', 'hybrid', 'mse', 'mape'],
         help='Force specific loss type (overrides detection from model name)'
     )
     

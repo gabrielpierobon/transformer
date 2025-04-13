@@ -47,6 +47,7 @@ data/processed/*
 data_docker/*
 models/checkpoint*
 models/final
+models/finetuned/*
 reports/*
 logs/*
 evaluation/_priors*

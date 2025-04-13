@@ -327,67 +327,61 @@ python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name transformer_1.0_d
 
 ## 7. Evaluating Tourism Models
 
-The tourism evaluation script follows the N-BEATS methodology for calculating MAPE:
-1. Calculate APE for each horizon of each series
-2. Average APEs across horizons for each series
-3. Average the series MAPEs to get final MAPE
+The tourism evaluation script compares three forecasting approaches:
+1. Your transformer model
+2. A global NBEATS model trained on all specified series at once
+3. A Naive2 benchmark (average of last 2 observations)
 
 ### Basic Usage
 
 ```bash
-# Evaluate model without log transform
-python scripts/evaluate_tourism.py --model-name finetuned_tourism_transformer_1_weights_full
+# Evaluate model on all tourism series
+python scripts/evaluate_tourism.py --model-name your_model_name_full
 
-# Evaluate model with log transform
-python scripts/evaluate_tourism.py --model-name finetuned_tourism_transformer_1_weights_full --log-transform
+# Evaluate a single series
+python scripts/evaluate_tourism.py --model-name your_model_name_full --series-id T1
+
+# Evaluate a specific set of series
+python scripts/evaluate_tourism.py --model-name your_model_name_full --series-list "T1,T2,T3,T4,T5"
 ```
+
+### Global NBEATS Model
+
+The script automatically trains a global N-BEATS model on the same series being evaluated:
+- Trained on all specified series simultaneously
+- Uses MAPE loss function
+- Uses early stopping for efficient training
+- Uses the same input window size (60 points) as the transformer model
+
+This provides a strong benchmark to compare your model against, using a modern state-of-the-art architecture that's purpose-built for time series forecasting.
 
 ### Output Information
 
 The script provides:
-1. **Detailed Results**:
-   - Per-series MAPE across all horizons
-   - Individual APEs for each horizon (1-24 months)
-   - Saved in `results/tourism_evaluation_detailed.csv`
+1. **Detailed Excel File**:
+   - Per-series metrics for all three models (Transformer, N-BEATS, Naive2)
+   - Overall summary statistics
+   - Saved in `evaluation/tourism/`
 
-2. **Overall Results**:
-   - Total number of series evaluated
-   - Forecast horizon (24 months)
-   - Overall Monthly MAPE
-   - Contribution weight to final score
-   - Saved in `results/tourism_evaluation_summary.csv`
+2. **Visualization Plots**:
+   - One plot per series with all three forecasts
+   - Shows historical data, actual future values, and predictions
+   - Saved in `evaluation/tourism/plots/your_model_name/`
 
-### N-BEATS Weighting Formula
+### Metrics Reported
 
-The script calculates the contribution to the final weighted MAPE using the N-BEATS formula:
-```
-MAPEAverage = (NYear/NTot × MAPEYear) + (NQuart/NTot × MAPEQuart) + (NMonth/NTot × MAPEMonth)
+The script calculates:
+- MAPE (Mean Absolute Percentage Error) - primary metric
+- MAE (Mean Absolute Error)
+- SMAPE (Symmetric Mean Absolute Percentage Error)
+- RMSE (Root Mean Square Error)
 
-Where:
-- NMonth = 24 × 366 (horizons × monthly series)
-- NTot = (4 × 518) + (8 × 427) + (24 × 366)
-- Monthly weight ≈ 0.567 (56.7% contribution)
-```
+### Automatic Log Transformation Detection
 
-### Example Results Format
-
-```
-Detailed Results:
-==================================================
-Series 1 - Average MAPE across all horizons: 5.75%
-Series 2 - Average MAPE across all horizons: 5.32%
-Series 3 - Average MAPE across all horizons: 5.98%
-...
-
-Overall Results:
-==================================================
-Total number of series: 366
-Forecast horizon: 24 months
-Overall Monthly MAPE: 5.68%
-
-Monthly weight in final score: 0.567
-This MAPE would contribute 56.7% to the final weighted average MAPE
-```
+The script automatically detects when log transformation would benefit a series based on its variance pattern:
+- Series with increasing variance are transformed before forecasting
+- The transformation is applied only to the Transformer model input/output
+- Original scale is used for all metrics and visualizations
 
 ## 8. Testing with Air Passengers Dataset
 
