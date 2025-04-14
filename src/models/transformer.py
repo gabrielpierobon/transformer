@@ -22,6 +22,11 @@ def positional_encoding(position, d_model):
 
     return tf.cast(pos_encoding, dtype=tf.float32)
 
+def swiglu(x):
+    """SwigLU activation function: x1 * swish(x2) where x is split in half along feature dimension."""
+    x1, x2 = tf.split(x, 2, axis=-1)
+    return x1 * tf.nn.silu(x2)  # silu is the TensorFlow implementation of swish
+
 def create_padding_mask(seq):
     """
     Create a mask for padding tokens (zeros).
@@ -85,10 +90,11 @@ class CustomMultiHeadAttention(tf.keras.layers.Layer):
 
 def point_wise_feed_forward_network(d_model, dff):
     """
-    Position-wise feed-forward network.
+    Position-wise feed-forward network with SwigLU activation.
     """
     return tf.keras.Sequential([
-        tf.keras.layers.Dense(dff, activation='relu', name='ffn_first_layer'),
+        tf.keras.layers.Dense(dff * 2, activation=None, name='ffn_first_layer'),  # Double size for gating
+        tf.keras.layers.Lambda(swiglu, name='swiglu_activation'),
         tf.keras.layers.Dense(d_model, name='ffn_output_layer')
     ])
 
@@ -170,6 +176,15 @@ def hybrid_loss(alpha=0.9):
 def build_transformer_model(sequence_length=60, num_heads=4, d_model=512, dff=512, rate=0.05, probabilistic=True):
     """
     Build a transformer model for time series forecasting with masking and optional uncertainty estimation.
+    
+    The model includes:
+    - Input masking for handling missing values
+    - Positional encoding for sequence order
+    - Multi-head self-attention mechanism
+    - Feed-forward network with SwigLU activation (instead of traditional ReLU)
+    - Dropout and layer normalization for regularization
+    - Global average pooling for sequence aggregation
+    - Dense output layer(s) for point or probabilistic forecasting
     """
     inputs = tf.keras.Input(shape=(sequence_length, 1), name='input_sequence')
 
@@ -219,6 +234,10 @@ def get_model(sequence_length=60, probabilistic=True, loss_type='gaussian_nll', 
         probabilistic (bool): Whether to use probabilistic predictions
         loss_type (str): Type of loss function ('gaussian_nll', 'smape', 'hybrid', 'mape', or 'mse')
         loss_alpha (float): Weight for sMAPE in hybrid loss (1-alpha for Gaussian NLL)
+        
+    Notes:
+        The model uses SwigLU activation in the feed-forward network for improved performance.
+        SwigLU is a gated activation function that combines Swish activation with linear gating.
     """
     model = build_transformer_model(
         sequence_length=sequence_length,

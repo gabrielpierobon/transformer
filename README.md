@@ -15,6 +15,7 @@ A deep learning project implementing Slapformer (Short-history Learning with Aug
 - **Transformer-based Design**: Utilizes self-attention mechanisms to capture complex temporal dependencies
 - **Input Embedding + Positional Encoding**: Preserves temporal information in the time series
 - **Multi-Head Attention (4 heads)**: Allows the model to focus on different aspects of the input sequence
+- **SwigLU Activation**: Swish-Gated Linear Unit for improved gradient flow and forecasting performance
 - **Feed-Forward Network**: Processes normalized attention outputs with a dimension of 2048
 - **Global Average Pooling**: Reduces the sequence dimension by averaging across time steps
 
