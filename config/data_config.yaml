@@ -26,4 +26,4 @@ detrending:
 
 # Data type configuration
 dtype:
-  precision: "float16"  # Changed to float32 for tourism dataset for better precision 
+  precision: "float32"  # Changed to float32 for tourism dataset for better precision 

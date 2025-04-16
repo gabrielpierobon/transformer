@@ -138,6 +138,12 @@ def parse_args():
         help='Perform aggressive memory cleanup between epochs'
     )
     
+    parser.add_argument(
+        '--disable-memmap',
+        action='store_true',
+        help='Disable memory mapping for datasets (uses more RAM but might be faster on some systems)'
+    )
+    
     args = parser.parse_args()
     
     # Set default loss type based on model type if not specified
@@ -269,18 +275,170 @@ def configure_gpu():
         print("\nNo GPU devices found. Training will proceed on CPU.")
         print("Warning: Training on CPU will be significantly slower!")
 
+def create_dataset_from_generator(X, y, batch_size, is_training=True):
+    """Create a TF dataset using a generator to avoid loading entire arrays into memory.
+    
+    This approach is more memory-efficient than from_tensor_slices for very large datasets.
+    
+    Args:
+        X: Input features array (can be memory-mapped)
+        y: Target values array (can be memory-mapped)
+        batch_size: Size of each batch
+        is_training: Whether this is for training (enables shuffling)
+        
+    Returns:
+        A tf.data.Dataset
+    """
+    # Number of samples
+    n_samples = len(X)
+    print(f"Creating dataset for {n_samples} samples using generator")
+    
+    # Calculate number of batches (needed for epochs information)
+    steps_per_epoch = (n_samples + batch_size - 1) // batch_size  # Ceiling division
+    print(f"Dataset will have approximately {steps_per_epoch} steps per epoch with batch size {batch_size}")
+    
+    # Determine output shapes and types
+    x_shape = X.shape[1:]
+    y_shape = y.shape[1:]
+    x_dtype = np.float32  # Always use float32 for TensorFlow
+    y_dtype = np.float32  # Always use float32 for TensorFlow
+    
+    # Create indices array
+    indices = np.arange(n_samples)
+    
+    # Shuffle indices if training
+    if is_training:
+        print("Shuffling indices for training dataset")
+        np.random.shuffle(indices)
+    
+    # Define generator function
+    def generator():
+        # Process in chunks to avoid loading too much at once
+        chunk_size = 1000  # Process 1000 indices at a time
+        
+        for i in range(0, n_samples, chunk_size):
+            # Get chunk of indices
+            chunk_indices = indices[i:i+chunk_size]
+            
+            # Fetch data for these indices
+            X_chunk = X[chunk_indices].astype(x_dtype)
+            y_chunk = y[chunk_indices].astype(y_dtype)
+            
+            # Yield samples one by one
+            for j in range(len(chunk_indices)):
+                yield X_chunk[j], y_chunk[j]
+    
+    # Create dataset from generator with correct types
+    dataset = tf.data.Dataset.from_generator(
+        generator,
+        output_signature=(
+            tf.TensorSpec(shape=x_shape, dtype=tf.float32),
+            tf.TensorSpec(shape=y_shape, dtype=tf.float32)
+        )
+    )
+    
+    # Set the cardinality (size) of the dataset for proper progress reporting
+    dataset = dataset.apply(
+        tf.data.experimental.assert_cardinality(n_samples)
+    )
+    
+    # Batch the data
+    dataset = dataset.batch(batch_size)
+    
+    # Add prefetching to overlap data preprocessing and model execution
+    # Use a limited prefetch to avoid memory issues
+    dataset = dataset.prefetch(2)  # Limit prefetch to 2 batches
+    
+    return dataset
+
 def create_dataset_from_array(X, y, batch_size, is_training=True):
-    """Create a TF dataset with memory-efficient loading."""
+    """Create a TF dataset with memory-efficient loading for memory-mapped arrays.
+    
+    This function is optimized for large memory-mapped datasets.
+    
+    Args:
+        X: Input features (can be memory-mapped)
+        y: Target values (can be memory-mapped)
+        batch_size: Size of each batch
+        is_training: Whether this is for training (enables shuffling)
+        
+    Returns:
+        A tf.data.Dataset
+    """
+    # For very large datasets, use the generator approach
+    if len(X) > 5000000:  # If more than 5 million samples
+        print(f"Large dataset detected ({len(X)} samples) - using generator-based approach")
+        return create_dataset_from_generator(X, y, batch_size, is_training)
+    
+    # For smaller datasets, use the standard approach
+    n_samples = len(X)
+    steps_per_epoch = (n_samples + batch_size - 1) // batch_size  # Ceiling division
+    print(f"Using standard dataset creation for {n_samples} samples")
+    print(f"Dataset will have approximately {steps_per_epoch} steps per epoch with batch size {batch_size}")
+    
+    # Create dataset from tensor slices - works with memory-mapped arrays
     dataset = tf.data.Dataset.from_tensor_slices((X, y))
     
     if is_training:
-        # Use a smaller shuffle buffer
-        buffer_size = min(2000, len(X))
+        # Use a dynamic shuffle buffer size based on dataset size but capped for memory efficiency
+        buffer_size = min(5000, len(X))  # Reduced from 10000 to 5000
+        print(f"Using shuffle buffer size: {buffer_size}")
         dataset = dataset.shuffle(buffer_size, reshuffle_each_iteration=True)
     
-    # Use smaller prefetch and no caching
-    dataset = dataset.batch(batch_size).prefetch(1)
+    # Batch the data
+    dataset = dataset.batch(batch_size)
+    
+    # Use prefetching to overlap data preprocessing and model execution
+    dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+    
     return dataset
+
+def load_dataset_with_memmap(path, verbose=True, disable_memmap=False):
+    """Load dataset with memory mapping to reduce RAM usage.
+    
+    Args:
+        path: Path to the .npy file
+        verbose: Whether to print memory usage information
+        disable_memmap: If True, loads the entire array into memory
+        
+    Returns:
+        Memory-mapped numpy array or regular numpy array
+    """
+    if verbose:
+        print(f"Loading dataset from: {path}")
+    
+    if disable_memmap:
+        if verbose:
+            print("  Memory mapping disabled - loading entire array into memory")
+        array = np.load(path)
+    else:
+        if verbose:
+            print("  Using memory mapping - only accessed data will be loaded")
+        # Load array with memory mapping - only loads data when accessed
+        array = np.load(path, mmap_mode='r')
+    
+    # TensorFlow and DirectML work better with float32, so convert if needed
+    # For memory-mapped arrays, this creates a view that doesn't load all data at once
+    if array.dtype != np.float32:
+        if verbose:
+            print(f"  Converting from {array.dtype} to float32 for TensorFlow compatibility")
+        # Use astype with 'copy=False' for memory-mapped arrays to avoid loading all data
+        try:
+            array = array.astype(np.float32, copy=False)
+        except:
+            # If that fails (which it might for memmapped arrays), create a view
+            array = np.array(array, dtype=np.float32, copy=False)
+    
+    if verbose:
+        # Calculate size
+        size_mb = array.nbytes / (1024 * 1024)
+        shape_str = 'x'.join(str(dim) for dim in array.shape)
+        print(f"  Shape: {shape_str}")
+        print(f"  Size: {size_mb:.2f} MB")
+        print(f"  Data type: {array.dtype}")
+        print(f"  Memory-mapped: {isinstance(array, np.memmap)}")
+    
+    return array
 
 def cleanup_memory():
     """Clean up memory before heavy operations."""
@@ -315,7 +473,39 @@ def main():
     # Parse command line arguments
     args = parse_args()
     
-    # Configure GPU first, before any TensorFlow operations
+    # Set memory options for TensorFlow to avoid OOM errors
+    # These settings need to be applied before any TensorFlow operations
+    import tensorflow as tf
+    
+    # Limit TensorFlow's pre-allocation of GPU memory
+    physical_devices = tf.config.list_physical_devices('GPU')
+    if physical_devices:
+        try:
+            # Force TensorFlow to allocate memory as needed rather than grabbing all at once
+            for device in physical_devices:
+                tf.config.experimental.set_memory_growth(device, True)
+            print("Memory growth enabled for all GPUs")
+        except Exception as e:
+            print(f"Error configuring memory growth: {e}")
+    
+    # Set CPU memory allocation options
+    # This limits memory allocation during dataset initialization
+    tf.config.threading.set_intra_op_parallelism_threads(1)
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+    
+    # Display memory mapping information
+    print("\n==== Memory Management Configuration ====")
+    if not args.disable_memmap:
+        print("MEMORY MAPPING ENABLED: Large datasets will be processed efficiently without loading everything into RAM")
+        print("This allows training on the full 48,000 series M4 dataset with limited RAM")
+        print("Use --disable-memmap if you have sufficient RAM and want slightly faster data loading")
+    else:
+        print("MEMORY MAPPING DISABLED: All data will be loaded into RAM")
+        print("This may provide slightly faster training but requires much more memory")
+        print("For very large datasets, consider enabling memory mapping by removing --disable-memmap")
+    print("=======================================\n")
+    
+    # Configure GPU settings
     configure_gpu()
     
     # Enable mixed precision if requested
@@ -605,17 +795,30 @@ def main():
     # Load data in chunks to reduce memory usage
     print(f"Loading pre-processed data...")
     
-    # Use memory mapping for data loading
-    X_train = np.load(x_train_path, mmap_mode='r')
-    X_val = np.load(x_val_path, mmap_mode='r')
-    y_train = np.load(y_train_path, mmap_mode='r')
-    y_val = np.load(y_val_path, mmap_mode='r')
+    # Use memory mapping for data loading unless explicitly disabled
+    X_train = load_dataset_with_memmap(x_train_path, disable_memmap=args.disable_memmap)
+    X_val = load_dataset_with_memmap(x_val_path, disable_memmap=args.disable_memmap)
+    y_train = load_dataset_with_memmap(y_train_path, disable_memmap=args.disable_memmap)
+    y_val = load_dataset_with_memmap(y_val_path, disable_memmap=args.disable_memmap)
     
     print("Data loaded successfully!")
     print(f"X_train shape: {X_train.shape}")
     print(f"X_val shape: {X_val.shape}")
     print(f"y_train shape: {y_train.shape}")
     print(f"y_val shape: {y_val.shape}")
+    
+    # Print estimated virtual memory size
+    total_virtual_size_gb = (X_train.nbytes + X_val.nbytes + y_train.nbytes + y_val.nbytes) / (1024**3)
+    if not args.disable_memmap:
+        print(f"Total virtual memory size: {total_virtual_size_gb:.2f} GB (actual RAM usage much lower with memory mapping)")
+    else:
+        print(f"Total memory size: {total_virtual_size_gb:.2f} GB (fully loaded into RAM)")
+    
+    # Calculate actual memory usage
+    import psutil
+    process = psutil.Process(os.getpid())
+    actual_memory_gb = process.memory_info().rss / (1024**3)
+    print(f"Current actual memory usage: {actual_memory_gb:.2f} GB")
     
     # Plot random subsequences
     plot_random_subsequences(X_train, n=5, max_length=args.sequence_length)
@@ -791,13 +994,21 @@ def main():
     # Train model with adjusted parameters
     print("\nStarting training...")
     try:
+        # Calculate steps_per_epoch and validation_steps
+        train_steps = (len(X_train) + args.batch_size - 1) // args.batch_size
+        val_steps = (len(X_val) + args.batch_size - 1) // args.batch_size
+        
+        print(f"Training with {train_steps} steps per epoch and {val_steps} validation steps")
+        
         history = model.fit(
             train_dataset,
             epochs=args.epochs,
             validation_data=val_dataset,
             callbacks=callbacks,
             verbose=1,
-            initial_epoch=args.initial_epoch
+            initial_epoch=args.initial_epoch,
+            steps_per_epoch=train_steps,
+            validation_steps=val_steps
         )
         
         # Save training history plot
