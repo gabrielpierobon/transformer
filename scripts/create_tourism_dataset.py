@@ -237,17 +237,17 @@ def create_tourism_dataset(config: TourismDataConfig, log_transform: bool = Fals
                 np.save(output_dir / f"{name}{suffix}.npy", data)
                 logger.info(f"Successfully saved {name}{suffix}.npy")
                 del data
-                gc.collect()
-                
+            gc.collect()
+            
         except Exception as save_error:
             logger.error(f"Error during save: {str(save_error)}")
             logger.error(traceback.format_exc())
             raise
-        
+
         logger.info(f"Tourism dataset creation completed successfully!")
         logger.info(f"To use this dataset for finetuning, run:")
         logger.info(f"python scripts/finetune.py --pretrained-model <MODEL_NAME> --dataset-suffix {suffix}")
-        
+
     except Exception as e:
         logger.error(f"Error creating tourism dataset: {str(e)}")
         logger.error(traceback.format_exc())
@@ -259,7 +259,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--config', type=str, default='config/data_config.yaml',
                       help='Path to data configuration file')
     parser.add_argument('--log-transform', action='store_true',
-                      help='Apply log transformation to the data')
+                        help='Apply log transformation to the data')
     parser.add_argument('--random-seed', type=int, default=42,
                       help='Random seed for reproducible sampling')
     return parser.parse_args()

@@ -50,7 +50,7 @@ def calculate_smape(actual: np.ndarray, predicted: np.ndarray) -> float:
     mask = denominator > 0
     if np.any(mask):
         return np.mean(np.abs(predicted[mask] - actual[mask]) / denominator[mask]) * 100
-    return np.nan
+        return np.nan
 
 
 def calculate_naive2_forecast(values: np.ndarray, horizon: int) -> np.ndarray:
@@ -201,7 +201,7 @@ def plot_forecast(
         # Try to find a usable column for NBEATS forecast
         if 'NBEATS' in nbeats_forecast.columns:
             nbeats_column = 'NBEATS'
-        else:
+    else:
             # Look for any numeric column that's not ds or unique_id
             for col in nbeats_forecast.columns:
                 if col != 'ds' and col != 'unique_id' and pd.api.types.is_numeric_dtype(nbeats_forecast[col]):
@@ -456,7 +456,7 @@ def evaluate_model(
                 series_forecast = all_nbeats_forecasts[all_nbeats_forecasts['unique_id'] == series_id]
                 if len(series_forecast) > 0:
                     nbeats_forecasts[series_id] = series_forecast
-                else:
+    else:
                     logger.warning(f"No NBEATS forecast generated for series {series_id}")
                     
             logger.info(f"Generated NBEATS forecasts for {len(nbeats_forecasts)} series")
@@ -479,7 +479,7 @@ def evaluate_model(
             matching_rows = actual_values_df[actual_values_df['ds'] == date_str]
             if not matching_rows.empty:
                 actual_values.append(matching_rows.iloc[0]['y'])
-            else:
+    else:
                 actual_values.append(np.nan)
         actual_values = np.array(actual_values)
         
@@ -655,8 +655,8 @@ def main():
         # Run evaluation with the specified list of series
         evaluate_model(
             model_name=args.model_name,
-            train_df=train_df,
-            test_df=test_df,
+        train_df=train_df,
+        test_df=test_df,
             series_ids=series_ids_to_evaluate,
             specific_series=None  # Not using specific_series since we're using series_ids
         )
@@ -669,7 +669,7 @@ def main():
         
         # Run evaluation with the specific series
         evaluate_model(
-            model_name=args.model_name,
+        model_name=args.model_name,
             train_df=train_df,
             test_df=test_df,
             series_ids=all_series_ids,
@@ -681,12 +681,12 @@ def main():
         
         # Run evaluation with all series
         evaluate_model(
-            model_name=args.model_name,
+        model_name=args.model_name,
             train_df=train_df,
             test_df=test_df,
             series_ids=all_series_ids,
             specific_series=None
-        )
+    )
     
     logger.info("Evaluation complete")
 

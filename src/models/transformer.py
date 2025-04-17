@@ -173,7 +173,7 @@ def hybrid_loss(alpha=0.9):
     
     return loss_fn
 
-def build_transformer_model(sequence_length=60, num_heads=4, d_model=512, dff=512, rate=0.05, probabilistic=True):
+def build_transformer_model(sequence_length=60, num_heads=4, d_model=512, dff=512, rate=0.08, output_dropout_rate=0.05, probabilistic=True):
     """
     Build a transformer model for time series forecasting with masking and optional uncertainty estimation.
     
@@ -185,6 +185,15 @@ def build_transformer_model(sequence_length=60, num_heads=4, d_model=512, dff=51
     - Dropout and layer normalization for regularization
     - Global average pooling for sequence aggregation
     - Dense output layer(s) for point or probabilistic forecasting
+    
+    Args:
+        sequence_length: Length of input sequences
+        num_heads: Number of attention heads
+        d_model: Dimension of the model
+        dff: Dimension of feed-forward network
+        rate: Dropout rate for attention and feed-forward layers
+        output_dropout_rate: Dropout rate after global average pooling
+        probabilistic: Whether to output probabilistic predictions
     """
     inputs = tf.keras.Input(shape=(sequence_length, 1), name='input_sequence')
 
@@ -213,15 +222,18 @@ def build_transformer_model(sequence_length=60, num_heads=4, d_model=512, dff=51
 
     # Global average pooling
     global_avg_pooling = tf.keras.layers.GlobalAveragePooling1D()(out2)
+    
+    # Add dropout after pooling (new)
+    pooling_dropout = tf.keras.layers.Dropout(output_dropout_rate, name='pooling_dropout')(global_avg_pooling)
 
     if probabilistic:
         # Output mean and log variance for uncertainty estimation
-        mean = tf.keras.layers.Dense(1, name='mean')(global_avg_pooling)
-        log_var = tf.keras.layers.Dense(1, name='log_var')(global_avg_pooling)
+        mean = tf.keras.layers.Dense(1, name='mean')(pooling_dropout)
+        log_var = tf.keras.layers.Dense(1, name='log_var')(pooling_dropout)
         outputs = tf.keras.layers.Concatenate(name='probabilistic_output')([mean, log_var])
     else:
         # Point prediction output
-        outputs = tf.keras.layers.Dense(1, name='output_layer')(global_avg_pooling)
+        outputs = tf.keras.layers.Dense(1, name='output_layer')(pooling_dropout)
 
     return tf.keras.Model(inputs=inputs, outputs=outputs)
 
@@ -244,7 +256,8 @@ def get_model(sequence_length=60, probabilistic=True, loss_type='gaussian_nll', 
         num_heads=4,
         d_model=512,
         dff=512,
-        rate=0.05,
+        rate=0.08,
+        output_dropout_rate=0.05,
         probabilistic=probabilistic
     )
     

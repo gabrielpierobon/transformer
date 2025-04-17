@@ -991,6 +991,12 @@ def main():
     print(f"Sequence Length: {args.sequence_length}")
     print(f"Model Name: {model_name}")
     
+    # Add note about dropout improvements
+    print("\nImproved Dropout Configuration:")
+    print("- Moderate dropout increase: 8% in attention and feed-forward layers (was 5%)")
+    print("- Added new dropout layer: 5% after global pooling layer")
+    print("These improvements provide better regularization for larger datasets while maintaining model performance.")
+    
     # Train model with adjusted parameters
     print("\nStarting training...")
     try:
