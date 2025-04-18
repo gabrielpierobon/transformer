@@ -47,6 +47,11 @@ def parse_args():
         choices=['standard', 'balanced', 'rightmost'],
         help='Type of dataset to use (standard, balanced, or rightmost)'
     )
+    parser.add_argument(
+        '--splitted',
+        action='store_true',
+        help='Use split datasets from data/processed/memmap directory'
+    )
     
     # Training parameters
     parser.add_argument(
@@ -393,11 +398,11 @@ def create_dataset_from_array(X, y, batch_size, is_training=True):
     
     return dataset
 
-def load_dataset_with_memmap(path, verbose=True, disable_memmap=False):
+def load_dataset_with_memmap(path_or_pattern, verbose=True, disable_memmap=False):
     """Load dataset with memory mapping to reduce RAM usage.
     
     Args:
-        path: Path to the .npy file
+        path_or_pattern: Path to the .npy file or pattern for split files
         verbose: Whether to print memory usage information
         disable_memmap: If True, loads the entire array into memory
         
@@ -405,32 +410,70 @@ def load_dataset_with_memmap(path, verbose=True, disable_memmap=False):
         Memory-mapped numpy array or regular numpy array
     """
     if verbose:
-        print(f"Loading dataset from: {path}")
+        print(f"Loading dataset from: {path_or_pattern}")
     
+    # Check if this is a split dataset pattern
+    if isinstance(path_or_pattern, (list, tuple)):
+        if verbose:
+            print("Loading split dataset files:")
+            for p in path_or_pattern:
+                print(f"  - {p}")
+        
+        arrays = []
+        total_size = 0
+        
+        for file_path in path_or_pattern:
+            if disable_memmap:
+                if verbose:
+                    print(f"  Loading {file_path} into memory")
+                arr = np.load(file_path)
+            else:
+                if verbose:
+                    print(f"  Memory-mapping {file_path}")
+                arr = np.load(file_path, mmap_mode='r')
+            
+            # Convert to float32 if needed
+            if arr.dtype != np.float32:
+                if verbose:
+                    print(f"  Converting {file_path} from {arr.dtype} to float32")
+                arr = arr.astype(np.float32, copy=False)
+            
+            arrays.append(arr)
+            total_size += arr.nbytes
+            
+            if verbose:
+                print(f"  Shape: {arr.shape}")
+                print(f"  Size: {arr.nbytes / (1024 * 1024):.2f} MB")
+        
+        # Concatenate arrays (creates a view for memory-mapped arrays)
+        if verbose:
+            print("Concatenating arrays...")
+        array = np.concatenate(arrays, axis=0)
+        
+        if verbose:
+            print(f"Final concatenated shape: {array.shape}")
+            print(f"Total virtual size: {total_size / (1024 * 1024):.2f} MB")
+            if not disable_memmap:
+                print("(Using memory mapping - only accessed data will be loaded)")
+        
+        return array
+    
+    # Single file case (original behavior)
     if disable_memmap:
         if verbose:
             print("  Memory mapping disabled - loading entire array into memory")
-        array = np.load(path)
+        array = np.load(path_or_pattern)
     else:
         if verbose:
             print("  Using memory mapping - only accessed data will be loaded")
-        # Load array with memory mapping - only loads data when accessed
-        array = np.load(path, mmap_mode='r')
+        array = np.load(path_or_pattern, mmap_mode='r')
     
-    # TensorFlow and DirectML work better with float32, so convert if needed
-    # For memory-mapped arrays, this creates a view that doesn't load all data at once
     if array.dtype != np.float32:
         if verbose:
-            print(f"  Converting from {array.dtype} to float32 for TensorFlow compatibility")
-        # Use astype with 'copy=False' for memory-mapped arrays to avoid loading all data
-        try:
-            array = array.astype(np.float32, copy=False)
-        except:
-            # If that fails (which it might for memmapped arrays), create a view
-            array = np.array(array, dtype=np.float32, copy=False)
+            print(f"  Converting from {array.dtype} to float32")
+        array = array.astype(np.float32, copy=False)
     
     if verbose:
-        # Calculate size
         size_mb = array.nbytes / (1024 * 1024)
         shape_str = 'x'.join(str(dim) for dim in array.shape)
         print(f"  Shape: {shape_str}")
@@ -468,6 +511,55 @@ def cleanup_memory():
     import psutil
     process = psutil.Process(os.getpid())
     print(f"\nMemory usage after cleanup: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+
+def find_split_datasets(base_directory: Path, sample_size: int) -> tuple:
+    """Find all split dataset files in the memmap directory.
+    
+    Args:
+        base_directory: Path to the memmap directory
+        sample_size: Sample size per split
+        
+    Returns:
+        Tuple of (x_train_paths, x_val_paths, y_train_paths, y_val_paths)
+    """
+    # Find all unique prefixes (e.g., "M1_M12000", "M12001_M24000", etc.)
+    x_train_files = list(base_directory.glob(f'X_train_*_sampled{sample_size}.npy'))
+    prefixes = set()
+    
+    for file in x_train_files:
+        # Extract the M*_M* part from the filename
+        match = re.search(r'(M\d+_M\d+)_sampled', file.name)
+        if match:
+            prefixes.add(match.group(1))
+    
+    if not prefixes:
+        print(f"No split datasets found with sample size {sample_size}")
+        return None
+    
+    # Sort prefixes to ensure correct order (M1_M12000 before M12001_M24000, etc.)
+    prefixes = sorted(prefixes, key=lambda x: int(re.search(r'M(\d+)_', x).group(1)))
+    
+    print(f"Found {len(prefixes)} dataset splits:")
+    for p in prefixes:
+        print(f"  - {p}")
+    
+    # Create paths for each prefix
+    x_train_paths = [base_directory / f"X_train_{p}_sampled{sample_size}.npy" for p in prefixes]
+    x_val_paths = [base_directory / f"X_val_{p}_sampled{sample_size}.npy" for p in prefixes]
+    y_train_paths = [base_directory / f"y_train_{p}_sampled{sample_size}.npy" for p in prefixes]
+    y_val_paths = [base_directory / f"y_val_{p}_sampled{sample_size}.npy" for p in prefixes]
+    
+    # Verify all files exist
+    all_paths = x_train_paths + x_val_paths + y_train_paths + y_val_paths
+    missing_files = [str(p) for p in all_paths if not p.exists()]
+    
+    if missing_files:
+        print("Error: Some required files are missing:")
+        for f in missing_files:
+            print(f"  - {f}")
+        return None
+    
+    return x_train_paths, x_val_paths, y_train_paths, y_val_paths
 
 def main():
     # Parse command line arguments
@@ -668,140 +760,163 @@ def main():
     # Define checkpoint callback
     checkpoint_path = checkpoint_dir / f'model_{model_name}_{{epoch:02d}}.h5'
     
-    # Define data paths
-    base_directory = Path('data/processed/')
-    
-    # Check for balanced dataset format first
-    balanced_suffix = f"balanced_sampled{args.sample_size}_seed{args.random_seed}" if args.sample_size and hasattr(args, 'random_seed') else None
-    
-    # Check for right-most dataset format
-    rightmost_suffix = f"rightmost_sampled{args.sample_size}_seed{args.random_seed}" if args.sample_size and hasattr(args, 'random_seed') else None
-    
-    # Try different naming patterns in order of preference
-    data_suffixes = []
-    
-    # If dataset type is specified, prioritize that format
-    if hasattr(args, 'dataset_type') and args.dataset_type:
-        if args.dataset_type == 'balanced' and balanced_suffix:
-            data_suffixes.append(balanced_suffix)
-        elif args.dataset_type == 'rightmost' and rightmost_suffix:
-            data_suffixes.append(rightmost_suffix)
-        elif args.dataset_type == 'standard':
-            # For standard datasets, try the exact series range first
+    # Define data paths based on whether we're using split datasets
+    if args.splitted:
+        base_directory = Path('data/processed/memmap')
+        print(f"\nUsing split datasets from {base_directory}")
+        
+        # Find all split datasets
+        dataset_paths = find_split_datasets(base_directory, args.sample_size)
+        
+        if dataset_paths is None:
+            print("Error finding split datasets. Please check the files in data/processed/memmap")
+            sys.exit(1)
+            
+        x_train_paths, x_val_paths, y_train_paths, y_val_paths = dataset_paths
+        
+        # Calculate total sample size
+        total_samples = len(x_train_paths) * args.sample_size
+        print(f"\nTotal samples across all splits: {total_samples}")
+        
+        # Load data using memory mapping
+        print("\nLoading pre-processed data (split across multiple files)...")
+        X_train = load_dataset_with_memmap(x_train_paths, disable_memmap=args.disable_memmap)
+        X_val = load_dataset_with_memmap(x_val_paths, disable_memmap=args.disable_memmap)
+        y_train = load_dataset_with_memmap(y_train_paths, disable_memmap=args.disable_memmap)
+        y_val = load_dataset_with_memmap(y_val_paths, disable_memmap=args.disable_memmap)
+        
+    else:
+        # Original behavior for non-split datasets
+        base_directory = Path('data/processed/')
+        
+        # Check for balanced dataset format first
+        balanced_suffix = f"balanced_sampled{args.sample_size}_seed{args.random_seed}" if args.sample_size and hasattr(args, 'random_seed') else None
+        
+        # Check for right-most dataset format
+        rightmost_suffix = f"rightmost_sampled{args.sample_size}_seed{args.random_seed}" if args.sample_size and hasattr(args, 'random_seed') else None
+        
+        # Try different naming patterns in order of preference
+        data_suffixes = []
+        
+        # If dataset type is specified, prioritize that format
+        if hasattr(args, 'dataset_type') and args.dataset_type:
+            if args.dataset_type == 'balanced' and balanced_suffix:
+                data_suffixes.append(balanced_suffix)
+            elif args.dataset_type == 'rightmost' and rightmost_suffix:
+                data_suffixes.append(rightmost_suffix)
+            elif args.dataset_type == 'standard':
+                # For standard datasets, try the exact series range first
+                if args.sample_size:
+                    data_suffixes.append(f"{series_range}")
+                
+                # Then try with the command-line specified parameters
+                if args.start_series and args.end_series and args.sample_size:
+                    cmd_series_range = f"M{args.start_series}_M{args.end_series}_sampled{args.sample_size}"
+                    if cmd_series_range != series_range:
+                        data_suffixes.append(cmd_series_range)
+                
+                # Also try without sampling if specified
+                if args.start_series and args.end_series:
+                    data_suffixes.append(f"M{args.start_series}_M{args.end_series}")
+        else:
+            # 1. Try balanced dataset format if sample_size is provided
+            if balanced_suffix:
+                data_suffixes.append(balanced_suffix)
+            
+            # 2. Try right-most dataset format if sample_size is provided
+            if rightmost_suffix:
+                data_suffixes.append(rightmost_suffix)
+            
+            # 3. Try series range with sampling
             if args.sample_size:
                 data_suffixes.append(f"{series_range}")
             
-            # Then try with the command-line specified parameters
-            if args.start_series and args.end_series and args.sample_size:
-                cmd_series_range = f"M{args.start_series}_M{args.end_series}_sampled{args.sample_size}"
-                if cmd_series_range != series_range:
-                    data_suffixes.append(cmd_series_range)
+            # 4. Try just the balanced part without seed
+            if args.sample_size:
+                data_suffixes.append(f"balanced_sampled{args.sample_size}")
             
-            # Also try without sampling if specified
-            if args.start_series and args.end_series:
-                data_suffixes.append(f"M{args.start_series}_M{args.end_series}")
-    else:
-        # 1. Try balanced dataset format if sample_size is provided
-        if balanced_suffix:
-            data_suffixes.append(balanced_suffix)
+            # 5. Try just the right-most part without seed
+            if args.sample_size:
+                data_suffixes.append(f"rightmost_sampled{args.sample_size}")
         
-        # 2. Try right-most dataset format if sample_size is provided
-        if rightmost_suffix:
-            data_suffixes.append(rightmost_suffix)
+        # Always try the series range without sampling as a fallback
+        series_range_no_sample = f"M{args.start_series}_M{args.end_series}"
+        if series_range_no_sample not in data_suffixes:
+            data_suffixes.append(series_range_no_sample)
         
-        # 3. Try series range with sampling
-        if args.sample_size:
-            data_suffixes.append(f"{series_range}")
-        
-        # 4. Try just the balanced part without seed
-        if args.sample_size:
-            data_suffixes.append(f"balanced_sampled{args.sample_size}")
-        
-        # 5. Try just the right-most part without seed
-        if args.sample_size:
-            data_suffixes.append(f"rightmost_sampled{args.sample_size}")
-    
-    # Always try the series range without sampling as a fallback
-    series_range_no_sample = f"M{args.start_series}_M{args.end_series}"
-    if series_range_no_sample not in data_suffixes:
-        data_suffixes.append(series_range_no_sample)
-    
-    # Try each suffix until we find matching files
-    found_data = False
-    for suffix in data_suffixes:
-        x_train_path = base_directory / f'X_train_{suffix}.npy'
-        x_val_path = base_directory / f'X_val_{suffix}.npy'
-        y_train_path = base_directory / f'y_train_{suffix}.npy'
-        y_val_path = base_directory / f'y_val_{suffix}.npy'
-        
-        if all(p.exists() for p in [x_train_path, x_val_path, y_train_path, y_val_path]):
-            found_data = True
-            print(f"Found dataset with suffix: {suffix}")
-            break
-    
-    # If we still haven't found the data and dataset_type is 'standard', try all available standard datasets
-    if not found_data and hasattr(args, 'dataset_type') and args.dataset_type == 'standard':
-        print("Searching for available standard datasets...")
-        
-        # List all available datasets
-        x_train_files = list(base_directory.glob('X_train_M*.npy'))
-        if x_train_files:
-            # Sort by sample size (largest first) to prioritize larger datasets
-            x_train_files.sort(key=lambda x: x.name, reverse=True)
+        # Try each suffix until we find matching files
+        found_data = False
+        for suffix in data_suffixes:
+            x_train_path = base_directory / f'X_train_{suffix}.npy'
+            x_val_path = base_directory / f'X_val_{suffix}.npy'
+            y_train_path = base_directory / f'y_train_{suffix}.npy'
+            y_val_path = base_directory / f'y_val_{suffix}.npy'
             
-            for file in x_train_files:
-                suffix = file.name[8:-4]  # Remove 'X_train_' and '.npy'
-                
-                # Skip balanced and rightmost datasets
-                if 'balanced_' in suffix or 'rightmost_' in suffix:
-                    continue
-                
-                x_val_path = base_directory / f'X_val_{suffix}.npy'
-                y_train_path = base_directory / f'y_train_{suffix}.npy'
-                y_val_path = base_directory / f'y_val_{suffix}.npy'
-                
-                if all(p.exists() for p in [file, x_val_path, y_train_path, y_val_path]):
-                    x_train_path = file
-                    found_data = True
-                    print(f"Found standard dataset with suffix: {suffix}")
-                    break
-    
-    # If we still haven't found the data, try a direct file search
-    if not found_data:
-        print("Dataset not found with standard naming patterns. Searching for available datasets...")
+            if all(p.exists() for p in [x_train_path, x_val_path, y_train_path, y_val_path]):
+                found_data = True
+                print(f"Found dataset with suffix: {suffix}")
+                break
         
-        # List all available datasets
-        x_train_files = list(base_directory.glob('X_train_*.npy'))
-        if x_train_files:
-            print("\nAvailable datasets:")
-            for file in x_train_files:
-                suffix = file.name[8:-4]  # Remove 'X_train_' and '.npy'
-                print(f"  - {suffix}")
+        # If we still haven't found the data and dataset_type is 'standard', try all available standard datasets
+        if not found_data and hasattr(args, 'dataset_type') and args.dataset_type == 'standard':
+            print("Searching for available standard datasets...")
             
-            # Ask user to specify dataset
-            print("\nPlease run the script again with the appropriate dataset parameters.")
+            # List all available datasets
+            x_train_files = list(base_directory.glob('X_train_M*.npy'))
+            if x_train_files:
+                # Sort by sample size (largest first) to prioritize larger datasets
+                x_train_files.sort(key=lambda x: x.name, reverse=True)
+                
+                for file in x_train_files:
+                    suffix = file.name[8:-4]  # Remove 'X_train_' and '.npy'
+                    
+                    # Skip balanced and rightmost datasets
+                    if 'balanced_' in suffix or 'rightmost_' in suffix:
+                        continue
+                    
+                    x_val_path = base_directory / f'X_val_{suffix}.npy'
+                    y_train_path = base_directory / f'y_train_{suffix}.npy'
+                    y_val_path = base_directory / f'y_val_{suffix}.npy'
+                    
+                    if all(p.exists() for p in [file, x_val_path, y_train_path, y_val_path]):
+                        x_train_path = file
+                        found_data = True
+                        print(f"Found standard dataset with suffix: {suffix}")
+                        break
+        
+        # If we still haven't found the data, try a direct file search
+        if not found_data:
+            print("Dataset not found with standard naming patterns. Searching for available datasets...")
+            
+            # List all available datasets
+            x_train_files = list(base_directory.glob('X_train_*.npy'))
+            if x_train_files:
+                print("\nAvailable datasets:")
+                for file in x_train_files:
+                    suffix = file.name[8:-4]  # Remove 'X_train_' and '.npy'
+                    print(f"  - {suffix}")
+                
+                print("\nPlease run the script again with the appropriate dataset parameters.")
+                sys.exit(1)
+            else:
+                print("No datasets found in data/processed/ directory.")
+                print("Please run create_dataset.py, create_balanced_dataset.py, or create_rightmost_dataset.py first.")
+                sys.exit(1)
+        
+        # Check if processed data exists
+        if not all(p.exists() for p in [x_train_path, x_val_path, y_train_path, y_val_path]):
+            print(f"Processed data not found for series range {series_range}.")
+            print("Please run create_dataset.py or create_balanced_dataset.py first with appropriate arguments.")
             sys.exit(1)
-        else:
-            print("No datasets found in data/processed/ directory.")
-            print("Please run create_dataset.py, create_balanced_dataset.py, or create_rightmost_dataset.py first.")
-            sys.exit(1)
+        
+        # Load data using memory mapping
+        print(f"Loading pre-processed data...")
+        X_train = load_dataset_with_memmap(x_train_path, disable_memmap=args.disable_memmap)
+        X_val = load_dataset_with_memmap(x_val_path, disable_memmap=args.disable_memmap)
+        y_train = load_dataset_with_memmap(y_train_path, disable_memmap=args.disable_memmap)
+        y_val = load_dataset_with_memmap(y_val_path, disable_memmap=args.disable_memmap)
     
-    # Check if processed data exists
-    if not all(p.exists() for p in [x_train_path, x_val_path, y_train_path, y_val_path]):
-        print(f"Processed data not found for series range {series_range}.")
-        print("Please run create_dataset.py or create_balanced_dataset.py first with appropriate arguments.")
-        sys.exit(1)
-    
-    # Load data in chunks to reduce memory usage
-    print(f"Loading pre-processed data...")
-    
-    # Use memory mapping for data loading unless explicitly disabled
-    X_train = load_dataset_with_memmap(x_train_path, disable_memmap=args.disable_memmap)
-    X_val = load_dataset_with_memmap(x_val_path, disable_memmap=args.disable_memmap)
-    y_train = load_dataset_with_memmap(y_train_path, disable_memmap=args.disable_memmap)
-    y_val = load_dataset_with_memmap(y_val_path, disable_memmap=args.disable_memmap)
-    
-    print("Data loaded successfully!")
+    print("\nData loaded successfully!")
     print(f"X_train shape: {X_train.shape}")
     print(f"X_val shape: {X_val.shape}")
     print(f"y_train shape: {y_train.shape}")
