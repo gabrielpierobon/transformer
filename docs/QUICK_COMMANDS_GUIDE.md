@@ -323,7 +323,87 @@ python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name transformer_1.0_d
 python scripts/evaluate_m4_scripts/evaluate_m4.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --sample_size 48000
 ```
 
-> **Note**: The M4 dataset files needed for evaluation can be downloaded from the [M4 Competition GitHub repository](https://github.com/Mcompetitions/M4-methods/tree/master/Dataset). Place the downloaded files in the `data/raw/` directory.
+### Resumable Evaluation
+
+For long-running evaluations on the full M4 dataset, use the resumable script which provides robust state management and progress tracking:
+
+```bash
+# Start a new evaluation
+python scripts/evaluate_m4_scripts/evaluate_m4_resumable.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full
+
+# Resume from most recent state automatically
+python scripts/evaluate_m4_scripts/evaluate_m4_resumable.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full
+
+# Resume from specific timestamp
+python scripts/evaluate_m4_scripts/evaluate_m4_resumable.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --timestamp 20240521_142830
+
+# Customize checkpoint frequency (default: every 10 series)
+python scripts/evaluate_m4_scripts/evaluate_m4_resumable.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --checkpoint_frequency 20
+
+# Set random seed for reproducibility
+python scripts/evaluate_m4_scripts/evaluate_m4_resumable.py --model_name transformer_1.0_directml_point_mse_M1_M48000_sampled1000_full --random_seed 42
+```
+
+Key features of the resumable evaluation:
+
+1. **State Management**:
+   - Automatically finds and resumes from the most recent state
+   - Saves state files in `evaluation/full_set/state/` directory
+   - Creates backups before saving to prevent corruption
+   - Tracks processed series indices to avoid duplicates
+
+2. **Progress Tracking**:
+   - Maintains two CSV files:
+     - `results_{model_name}_{timestamp}.csv`: Individual series results
+     - `running_metrics_{model_name}_{timestamp}.csv`: Running averages and statistics
+   - Generates progress plots showing running sMAPE averages
+   - Provides detailed progress reports with ETA
+
+3. **Visualization**:
+   - Creates individual plots for each series in `evaluation/full_set/plots/`
+   - Shows historical data, forecasts, and ground truth
+   - Generates running metrics visualization
+   - Updates progress plots at each checkpoint
+
+4. **Metrics Tracked**:
+   - Individual series sMAPE
+   - Naïve2 benchmark sMAPE
+   - Running average metrics
+   - Relative performance vs Naïve2
+   - Processing speed and ETA
+
+5. **Error Handling**:
+   - Graceful handling of interruptions (Ctrl+C)
+   - Automatic state recovery
+   - Series-level error isolation
+   - Corrupt state file detection
+
+Output Directory Structure:
+```
+evaluation/
+└── full_set/
+    ├── plots/                     # Individual series plots
+    ├── state/                     # State files for resuming
+    ├── results_*.csv             # Per-series results
+    ├── running_metrics_*.csv     # Running averages
+    ├── running_metrics_plot_*.png # Progress visualization
+    └── final_metrics_*.txt       # Final evaluation summary
+```
+
+The script provides real-time feedback:
+```
+Series 1000/48000 (2.1%) | ID: M1234 | Current sMAPE: 12.34 | Running Avg sMAPE: 11.45
+
+Detailed Progress Report:
+------------------------
+Processed: 1000/48000 series
+Completion: 2.1%
+Running sMAPE: 11.45
+Running Naïve2 sMAPE: 13.67
+Speed: 2.34 series/sec
+ETA: 5.6h
+------------------------
+```
 
 ## 7. Evaluating Tourism Models
 
@@ -546,27 +626,41 @@ These Google Trends test scripts demonstrate the model's ability to forecast sea
 
 ## 12. Script Organization Reference
 
-The scripts have been reorganized into logical subdirectories for better project organization:
+The scripts have been organized into logical subdirectories for better project organization:
 
-1. **Root Scripts** - Core functionality scripts remain in the main scripts directory:
-   - Dataset creation (`create_dataset.py`, `create_balanced_dataset.py`, `create_rightmost_dataset.py`)
-   - Training (`train.py`, `continue_training.py`)
-   - Model utilities (`fix_model_format.py`, `check_model_format.py`, `convert_model_format.py`)
-   - Performance tools (`optimize_training.py`, `verify_gpu.py`)
+1. **Core Scripts** (`scripts/`):
+   - Dataset creation:
+     - `create_dataset.py`
+     - `create_balanced_dataset.py`
+     - `create_rightmost_dataset.py`
+   - Training:
+     - `train.py`
+     - `continue_training.py`
+     - `finetune.py`
+   - Model utilities:
+     - `fix_model_format.py`
+     - `check_model_format.py`
+     - `convert_model_format.py`
+   - Performance tools:
+     - `optimize_training.py`
+     - `verify_gpu.py`
 
-2. **Evaluation Scripts** - Located in `scripts/evaluate_m4_scripts/`:
-   - `evaluate_m4.py` - Main M4 evaluation script
+2. **Evaluation Scripts** (`scripts/evaluate_m4_scripts/`):
+   - `evaluate_m4.py` - Basic M4 evaluation
+   - `evaluate_m4_resumable.py` - Robust resumable evaluation
    - `evaluate_m4_full.py` - Extended M4 evaluation
 
-3. **Zero-Shot Testing** - Located in `scripts/zero_shot_test/`:
-   - `air_passengers_test.py` - Tests using the Air Passengers dataset
-   - `google_trends_test.py` - Tests using Google Trends data
+3. **Zero-Shot Testing** (`scripts/zero_shot_test/`):
+   - `air_passengers_test.py` - Air Passengers dataset testing
+   - `google_trends_test.py` - Google Trends data testing
 
-4. **Short Series Testing** - Located in `scripts/short_series_test/`:
-   - `air_passengers_short_series_test.py` - Tests with limited Air Passengers history
-   - `google_trends_short_series_test.py` - Tests with limited Google Trends history
+4. **Short Series Testing** (`scripts/short_series_test/`):
+   - `air_passengers_short_series_test.py` - Limited history Air Passengers tests
+   - `google_trends_short_series_test.py` - Limited history Google Trends tests
 
-5. **Probabilistic Capabilities** - Located in `scripts/probabilistic_capabilities_test/`:
+5. **Probabilistic Capabilities** (`scripts/probabilistic_capabilities_test/`):
    - `air_passengers_proba_forecast.py` - Probabilistic forecasting with confidence intervals
 
-When running these scripts, be sure to use the correct path for the script location as shown in the examples throughout this guide. 
+When running these scripts, be sure to use the correct path for the script location as shown in the examples throughout this guide.
+
+> **Note**: The M4 dataset files needed for evaluation can be downloaded from the [M4 Competition GitHub repository](https://github.com/Mcompetitions/M4-methods/tree/master/Dataset). Place the downloaded files in the `data/raw/` directory.
